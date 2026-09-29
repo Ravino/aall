@@ -1,0 +1,912 @@
+diff --git a/spa/plugins/bluez5/a2dp-codec-aptx.c b/spa/plugins/bluez5/a2dp-codec-aptx.c
+--- a/spa/plugins/bluez5/a2dp-codec-aptx.c
++++ b/spa/plugins/bluez5/a2dp-codec-aptx.c
+@@ -27,6 +27,8 @@
+ #include "m4-adaptive-bridge.h"
+ #include "m4-adaptive-heartbeat.h"
+ #include "m4-adaptive-config.h"
++#include "m4-adaptive-conf-bridge.h" /* common/m4-conf.c-backed config, see that header */
++#include "m4-device-policy.h" /* allow-devices tri-state */
+ 
+ #define APTX_LL_LEVEL1(level) (((level) >> 8) & 0xFF)
+ #define APTX_LL_LEVEL2(level) (((level) >> 0) & 0xFF)
+@@ -857,111 +859,23 @@
+ #define APTX_ADAPTIVE_EOC0 0x00u
+ #define APTX_ADAPTIVE_EOC1 0xAAu
+ 
+-/* Helper process binaries/model. These three macros are only the
+- * LAST-RESORT fallback (precedence is default < ~/.config/momentum4/
+- * aptx-adaptive.conf < M4_ADAPTIVE_* env var, see
+- * adaptive_resolve_helper_paths() below) -- NOT tied to any one machine or
+- * repo checkout. They match where the momentum4-aptx-adaptive Debian
+- * package installs its own files (see debian/rules):
+- *   - qemu-hexagon is NOT shipped by this package -- Debian's own
+- *     `qemu-user` package (>= 1:7.2) already installs a working
+- *     /usr/bin/qemu-hexagon (confirmed: `apt-get download qemu-user`,
+- *     `dpkg-deb -c` lists ./usr/bin/qemu-hexagon). It is slower than the
+- * project's own private qemu build (per its own
+- *     measured RTF difference) but well inside the real-time budget; an
+- *     operator who wants the faster build can point `helper-qemu =` in the
+- *     config file at it instead.
+- *   - hx_adaptive_loader is built FROM SOURCE and shipped by this package
+- *     itself (see debian/rules, cross-compiled for Hexagon with clang/lld)
+- *     under /usr/lib/<triplet>/momentum4/hexagon/.
+- *   - the proprietary Qualcomm CAPI module is NEVER shipped by this package
+- * -- this
+- *     path is merely the conventional system-wide location an operator MAY
+- *     choose to place their own legally-obtained copy at; the documented,
+- *     supported way to point at one (system-wide or per-user) is the
+- *     `momentum4-setup --capi <path>` command, which validates it (ELF
+- *     Hexagon machine type, informational sha256 check against
+- *     data/capi-sha256.txt's known-good hashes) and writes
+- *     `helper-capi = <path>` into ~/.config/momentum4/aptx-adaptive.conf
+- *     (see README.Debian). A missing file here with no config/env override
+- *     either is not an error: codec_fill_caps_adaptive()'s own availability
+- *     probe (see below) simply keeps aptx_adaptive from being offered to
+- *     BlueZ at all, so negotiation falls back to aptx_hd/sbc -- fail-closed,
+- *     never a crash or silent transport. */
+-#ifndef M4_ADAPTIVE_DEFAULT_QEMU_PATH
+-#define M4_ADAPTIVE_DEFAULT_QEMU_PATH "/usr/bin/qemu-hexagon"
+-#endif
+-#ifndef M4_ADAPTIVE_DEFAULT_LOADER_PATH
+-#define M4_ADAPTIVE_DEFAULT_LOADER_PATH "/usr/lib/x86_64-linux-gnu/momentum4/hexagon/hx_adaptive_loader"
+-#endif
+-#ifndef M4_ADAPTIVE_DEFAULT_CAPI_PATH
+-#define M4_ADAPTIVE_DEFAULT_CAPI_PATH \
+-	"/usr/lib/x86_64-linux-gnu/momentum4/hexagon/capi_v2_aptX_CLHDADV_Encoder.so"
+-#endif
+-#define M4_ADAPTIVE_DEFAULT_HELPER_TIMEOUT_MS 200u
+-
+-/* "helper as a user-service" (design
+- * variant 2): default is SOCKET, not SPAWN -- qemu-hexagon normally runs as
+- * a systemd --user socket-activated service outside WirePlumber's process
+- * tree (momentum4-helper.socket / momentum4-helper@.service), so
+- * WirePlumber's own MemoryDenyWriteExecute=yes hardening never has to be
+- * relaxed. SPAWN remains available via
+- * `helper-mode = spawn` in the config file or $M4_ADAPTIVE_HELPER_MODE=spawn
+- * -- every offline test in test/ that memset()s its own
+- * struct m4_ah_bridge_config explicitly still gets SPAWN (mode 0) regardless
+- * of this default, since they never go through codec_init_adaptive() at
+- * all. */
+-#define M4_ADAPTIVE_DEFAULT_HELPER_MODE M4_AH_HELPER_MODE_SOCKET
+-
+-/* Default mode/latency (values tuned by
+- * ear on the standalone mirror; used here as this codec's own defaults, not
+- * copied from a shared config -- see m4-adaptive-config.h for how a user can
+- * override them for the SPA codec specifically). */
+-#define M4_ADAPTIVE_DEFAULT_MODE M4_AH_MODE_LL0
+-#define M4_ADAPTIVE_DEFAULT_LATENCY_ADJUST_MS (-15)
+-#define M4_ADAPTIVE_DEFAULT_HEARTBEAT_ENABLED true
+-#define M4_ADAPTIVE_DEFAULT_RESYNC_PERIOD_MIN 10
+-
+-/* "RT for the bridge's IO thread": default SCHED_FIFO priority for
+- * m4-adaptive-bridge.c's IO thread (see m4_ah_bridge_config.io_thread_rt_priority
+- * and m4-adaptive-config.h's "rt-priority" key). Below WirePlumber's own
+- * data-loop.0 (module-rt default rt.prio = 88 in wireplumber.conf; this
+- * live system's data-loop.0 runs at 83, still comfortably above this) so the
+- * audio graph's own RT thread is never preempted/starved by this one --
+- * chosen from live measurement. 0 would
+- * disable RT entirely (plain SCHED_OTHER, the pre-existing behaviour). */
+-#define M4_ADAPTIVE_DEFAULT_IO_RT_PRIORITY 70
+-
+-/* Heartbeat trigger thresholds. See m4-adaptive-heartbeat.h for what these
+- * feed into (originally 20 ms stall, 30 ms BT queue) -- both were likely-tier
+- * estimates from the standalone mirror's live journal, not independently
+- * re-measured for the in-process SPA codec's own scheduling. That open
+- * question is now resolved for the stall
+- * threshold specifically ("Latency drift in the output ring"):
+- * unlike the standalone mirror (a bare 10 ms timer thread), THIS
+- * codec's encode() calls are paced by media-sink.c's own flush timer AND
+- * PipeWire's per-quantum process() callback together (see
+- * m4-adaptive-bridge.h's file header on "encode ahead"), so the gap between
+- * two successive encode() calls is not a clean 10 ms metronome even with zero
+- * genuine host/RT problems: it tracks the live graph quantum, which floats
+- * between clock.min-quantum and clock.max-quantum (this machine's
+- * ~/.config/pipewire/pipewire.conf.d/10-quantum.conf: default 1024 = 21.3 ms,
+- * ceiling 2048 = 42.7 ms @ 48 kHz) -- i.e. the OLD 20 ms threshold was already
+- * below the default quantum's own natural period, before any real scheduling
+- * trouble at all. confirmed by live metrics (work/logs/metrics-*.jsonl):
+- * "stall" firing roughly once a minute during otherwise
+- * unremarkable playback, each one also driving a heartbeat resync -- far more
+- * often than the genuinely bad, audible gaps this trigger exists to catch
+- * . Raised to
+- * comfortably clear the configured max-quantum period with margin, while
+- * staying well below that reference point, so a resync is still forced
+- * promptly for an actual multi-block stall/restart -- this does not change
+- * what "late" (a REAL delivery gap: the output ring was empty when
+- * take_frame() was called) means at all, only this specific, timing-based
+- * "did encode() itself run late" heuristic. */
+-#define M4_ADAPTIVE_STALL_MS 50.0
+-#define M4_ADAPTIVE_WARMUP_BLOCKS 20u /* ~200 ms grace after init() before "late" is trusted */
+-#define M4_ADAPTIVE_BTQ_THRESHOLD_MS 30.0
++/* Helper process binaries/model, mode/latency defaults, heartbeat
++ * trigger thresholds, RT priority: ALL now live in common/m4-conf-
++ * keys.def's [adaptive]/[helper] sections, read once per
++ * codec_init_adaptive() via m4_ah_effective_config_load() -- no more
++ * compiled-in defaults or M4_ADAPTIVE_..., M4_AH_... environment variables
++ * in this file. See m4-adaptive-conf-bridge.h for the full precedence
++ * (momentum4.conf layers, with the OLD ~/.config/momentum4/
++ * aptx-adaptive.conf read only as a fallback when momentum4.conf has
++ * no [adaptive] section yet).
++ */
++
++/* Heartbeat trigger thresholds (stall-ms/warmup-blocks/btq-threshold-ms)
++ * moved to struct impl_adaptive (this->stall_ms/warmup_blocks/
++ * btq_threshold_ms, set once in codec_init_adaptive() from `ecfg`) --
++ * originally 20 ms/30 ms estimates, raised to 50.0 for stall_ms ("Latency
++ * drift in the output ring", live observation: this codec's encode()
++ * cadence tracks the live graph quantum, not a clean 10 ms metronome). */
+ /* (sizeof(struct rtp_header) + 348-byte LL frame) / 10 ms period. */
+ #define M4_ADAPTIVE_BYTES_PER_MS (((double)(12 + 348)) / 10.0)
+ 
+@@ -977,6 +891,24 @@
+ 	int32_t latency_adjust_ms;
+ 	struct m4_ah_heartbeat hb;
+ 
++	/* Resolved once in codec_init_adaptive() from [adaptive]
++	 * stall-ms/warmup-blocks/btq-threshold-ms (common/m4-conf-keys.def) --
++	 * plain field reads at every RT call site below (abr_process_adaptive(),
++	 * codec_start_encode_adaptive()), same cost as the compile-time macros
++	 * these replace. */
++	double stall_ms;
++	uint32_t warmup_blocks;
++	double btq_threshold_ms;
++	unsigned ring_target_frames; /* mirrors the bridge's own resolved
++				       * b->ring_target_frames (m4-adaptive-bridge.c) --
++				       * needed here too since codec_start_encode_adaptive()
++				       * gates heartbeat resync on ring occupancy but only
++				       * has the OPAQUE struct m4_ah_bridge*, not its
++				       * internals. */
++	unsigned ring_slots;         /* mirrors the bridge's resolved b->ring_slots,
++				       * for the periodic stats log's "in=N/CAPACITY" --
++				       * same opacity reasoning as ring_target_frames. */
++
+ 	uint32_t encode_calls;
+ 	double last_encode_ms;     /* 0 => no previous encode() call yet */
+ 	bool pending_btq_trigger;  /* set by abr_process(), consumed by the next encode() */
+@@ -1030,12 +962,14 @@
+ 	return (int16_t)peak;
+ }
+ 
+-static const char *adaptive_getenv_str(const char *name, const char *def)
+-{
+-	const char *v = getenv(name);
+-	return (v && *v) ? v : def;
+-}
+-
++/* The ONLY environment variable this codec still reads directly is
++ * M4_ADAPTIVE_STRIP_OTA (a low-level OTA-header protocol-variant debug knob
++ * kept deliberately out of common/m4-conf-keys.def's registry -- see
++ * its one call site in codec_init_adaptive()). Every OTHER former
++ * M4_ADAPTIVE_..., M4_AH_... environment variable is gone: config now flows
++ * exclusively through m4_ah_effective_config_load() (m4-adaptive-conf-
++ * bridge.h), with $MOMENTUM4_CONFIG (common/m4-conf.h) as the one supported
++ * override, for tests. */
+ static bool adaptive_getenv_bool(const char *name, bool def)
+ {
+ 	const char *v = getenv(name);
+@@ -1044,40 +978,9 @@
+ 	return !spa_streq(v, "0") && !spa_streq(v, "false") && !spa_streq(v, "no");
+ }
+ 
+-static uint32_t adaptive_getenv_u32(const char *name, uint32_t def)
+-{
+-	const char *v = getenv(name);
+-	char *end;
+-	unsigned long val;
+-	if (!v || !*v)
+-		return def;
+-	val = strtoul(v, &end, 0);
+-	if (end == v)
+-		return def;
+-	return (uint32_t)val;
+-}
+-
+-static int32_t adaptive_getenv_i32(const char *name, int32_t def)
+-{
+-	const char *v = getenv(name);
+-	char *end;
+-	long val;
+-	if (!v || !*v)
+-		return def;
+-	val = strtol(v, &end, 0);
+-	if (end == v)
+-		return def;
+-	if (val < INT32_MIN)
+-		val = INT32_MIN;
+-	if (val > INT32_MAX)
+-		val = INT32_MAX;
+-	return (int32_t)val;
+-}
+-
+-/* Effective helper paths, resolved with the SAME precedence used everywhere
+- * else in this file (hardcoded default < ~/.config/momentum4/aptx-adaptive.conf
+- * < M4_ADAPTIVE_{QEMU,LOADER,CAPI} environment variable). Deliberately shared
+- * between codec_fill_caps_adaptive() (pre-check before
++/* Effective helper paths, resolved via m4_ah_effective_config_load()
++ * (common/m4-conf.c). Deliberately shared between codec_fill_caps_adaptive()
++ * (pre-check before
+  * advertising the endpoint at all) and codec_init_adaptive() (the existing
+  * fail-closed check at actual transport setup) so the two can never disagree
+  * about what "the helper" even means -- disagreeing here
+@@ -1095,100 +998,20 @@
+ 
+ static void adaptive_resolve_helper_paths(struct adaptive_helper_paths *out)
+ {
+-	struct m4_ah_user_config ucfg;
+-	char config_path[M4_AH_CONFIG_PATH_MAX];
+-	char default_socket_path[M4_AH_CONFIG_PATH_MAX];
+-	const char *qemu, *loader, *capi, *socket_path, *mode_str;
+-
+-	m4_ah_user_config_defaults(&ucfg);
+-	m4_ah_user_config_default_path(config_path, sizeof(config_path));
+-	/* Best-effort: a missing/unreadable file is the expected common case,
+-	 * not logged as an error here (fill_caps() callers may not even have
+-	 * aptx_adaptive_log set up on the very first call; codec_init_adaptive()
+-	 * still does its own logged load for the "loaded config file" message). */
+-	m4_ah_user_config_load_file(&ucfg, config_path);
+-
+-	out->mode = ucfg.have_helper_mode ?
+-			(ucfg.helper_mode_is_socket ? M4_AH_HELPER_MODE_SOCKET : M4_AH_HELPER_MODE_SPAWN) :
+-			M4_ADAPTIVE_DEFAULT_HELPER_MODE;
+-	mode_str = getenv("M4_ADAPTIVE_HELPER_MODE");
+-	if (mode_str && *mode_str) {
+-		if (!strcasecmp(mode_str, "socket"))
+-			out->mode = M4_AH_HELPER_MODE_SOCKET;
+-		else if (!strcasecmp(mode_str, "spawn"))
+-			out->mode = M4_AH_HELPER_MODE_SPAWN;
+-		else if (aptx_adaptive_log)
+-			spa_log_warn(aptx_adaptive_log,
+-					"aptx_adaptive: ignoring unknown M4_ADAPTIVE_HELPER_MODE=%s "
+-					"(expected spawn or socket)", mode_str);
+-	}
+-
+-	qemu = adaptive_getenv_str("M4_ADAPTIVE_QEMU",
+-			ucfg.have_qemu_path ? ucfg.qemu_path : M4_ADAPTIVE_DEFAULT_QEMU_PATH);
+-	loader = adaptive_getenv_str("M4_ADAPTIVE_LOADER",
+-			ucfg.have_loader_path ? ucfg.loader_path : M4_ADAPTIVE_DEFAULT_LOADER_PATH);
+-	capi = adaptive_getenv_str("M4_ADAPTIVE_CAPI",
+-			ucfg.have_capi_path ? ucfg.capi_path : M4_ADAPTIVE_DEFAULT_CAPI_PATH);
+-
+-	m4_ah_user_config_default_socket_path(default_socket_path, sizeof(default_socket_path));
+-	socket_path = adaptive_getenv_str("M4_ADAPTIVE_HELPER_SOCKET",
+-			ucfg.have_socket_path ? ucfg.socket_path : default_socket_path);
+-
+-	snprintf(out->qemu, sizeof(out->qemu), "%s", qemu);
+-	snprintf(out->loader, sizeof(out->loader), "%s", loader);
+-	snprintf(out->capi, sizeof(out->capi), "%s", capi);
+-	snprintf(out->socket_path, sizeof(out->socket_path), "%s", socket_path);
+-}
+-
+-/* Deliberately env-only (no new
+- * m4-adaptive-config.h/.c keys, to keep this additive and independent of
+- * that file's existing parser/tests) -- the explicit requirement
+- * is just "atomically write to $XDG_RUNTIME_DIR/momentum4/adaptive-stats.json
+- * every 10 s", which the built-in default below already satisfies with zero
+- * configuration. `$M4_ADAPTIVE_STATS_DISABLE=1` turns the whole feature off
+- * (stats_path stays empty, m4-adaptive-bridge.c's maybe_write_stats() then
+- * never does any I/O at all -- see m4-adaptive-bridge.h). */
+-struct adaptive_stats_paths {
+-	bool disabled;
+-	char stats_path[M4_AH_CONFIG_PATH_MAX];
+-	char history_path[M4_AH_CONFIG_PATH_MAX];
+-	uint32_t interval_ms;
+-};
+-
+-static void adaptive_default_runtime_subdir(char *out, size_t out_cap)
+-{
+-	const char *xdg = getenv("XDG_RUNTIME_DIR");
+-	if (xdg && *xdg)
+-		snprintf(out, out_cap, "%s/momentum4", xdg);
+-	else
+-		snprintf(out, out_cap, "/run/user/%u/momentum4", (unsigned)getuid());
+-}
+-
+-static void adaptive_resolve_stats_paths(struct adaptive_stats_paths *out)
+-{
+-	/* Sized with headroom below M4_AH_CONFIG_PATH_MAX so the two
+-	 * concatenating snprintf()s just below cannot possibly truncate --
+-	 * silences -Werror=format-truncation (this build treats it as an error)
+-	 * without needing to check either snprintf()'s return value. */
+-	char default_dir[M4_AH_CONFIG_PATH_MAX - 64];
+-	char default_stats[M4_AH_CONFIG_PATH_MAX];
+-	char default_history[M4_AH_CONFIG_PATH_MAX];
+-	const char *stats_path, *history_path;
+-
+-	spa_zero(*out);
+-	out->disabled = adaptive_getenv_bool("M4_ADAPTIVE_STATS_DISABLE", false);
+-	if (out->disabled)
+-		return;
+-
+-	adaptive_default_runtime_subdir(default_dir, sizeof(default_dir));
+-	snprintf(default_stats, sizeof(default_stats), "%s/adaptive-stats.json", default_dir);
+-	snprintf(default_history, sizeof(default_history), "%s/adaptive-stats-history.jsonl", default_dir);
+-
+-	stats_path = adaptive_getenv_str("M4_ADAPTIVE_STATS_PATH", default_stats);
+-	history_path = adaptive_getenv_str("M4_ADAPTIVE_STATS_HISTORY_PATH", default_history);
+-	snprintf(out->stats_path, sizeof(out->stats_path), "%s", stats_path);
+-	snprintf(out->history_path, sizeof(out->history_path), "%s", history_path);
+-	out->interval_ms = adaptive_getenv_u32("M4_ADAPTIVE_STATS_INTERVAL_MS", 10000);
++	struct m4_ah_effective_config ecfg;
++
++	/* Single source of truth now, common/m4-conf.c's layered
++	 * momentum4.conf (with the aptx-adaptive.conf legacy fallback) -- see
++	 * m4-adaptive-conf-bridge.h. Best-effort/never logged here (fill_caps()
++	 * callers may not even have aptx_adaptive_log set up on the very first
++	 * call; codec_init_adaptive() does its own logging). */
++	m4_ah_effective_config_load(&ecfg);
++
++	out->mode = ecfg.helper_mode_is_socket ? M4_AH_HELPER_MODE_SOCKET : M4_AH_HELPER_MODE_SPAWN;
++	snprintf(out->qemu, sizeof(out->qemu), "%s", ecfg.helper_qemu_path);
++	snprintf(out->loader, sizeof(out->loader), "%s", ecfg.helper_loader_path);
++	snprintf(out->capi, sizeof(out->capi), "%s", ecfg.helper_capi_path);
++	snprintf(out->socket_path, sizeof(out->socket_path), "%s", ecfg.helper_socket_path);
+ }
+ 
+ /* bluez5-dbus.c calls fill_caps() once
+@@ -1221,17 +1044,20 @@
+ {
+ 	a2dp_aptx_adaptive_t c;
+ 	struct adaptive_helper_paths paths;
+-
+-	if (adaptive_getenv_bool("M4_ADAPTIVE_DISABLE", false)) {
+-		/* Symmetric with codec_init_adaptive()'s own M4_ADAPTIVE_DISABLE
+-		 * check: previously this env var only failed init() (i.e. AFTER
+-		 * BlueZ had already negotiated aptx_adaptive with the peer), which
+-		 * is exactly the same problem for anyone using it to turn the
+-		 * experiment off. Checking it here too means "disabled" behaves
+-		 * exactly like "helper unavailable" -- endpoint never advertised. */
++	struct m4_ah_effective_config ecfg_disable_check;
++
++	/* [adaptive] enable = off (replaces the old M4_ADAPTIVE_DISABLE
++	 * environment variable): symmetric with codec_init_adaptive()'s own
++	 * check below -- previously this only failed init() (i.e. AFTER BlueZ
++	 * had already negotiated aptx_adaptive with the peer), which is exactly
++	 * the same problem for anyone using it to turn the experiment off.
++	 * Checking it here too means "disabled" behaves exactly like "helper
++	 * unavailable" -- endpoint never advertised. */
++	m4_ah_effective_config_load(&ecfg_disable_check);
++	if (!ecfg_disable_check.enabled) {
+ 		if (aptx_adaptive_log)
+ 			spa_log_info(aptx_adaptive_log,
+-					"aptx_adaptive: disabled via M4_ADAPTIVE_DISABLE, "
++					"aptx_adaptive: disabled via [adaptive] enable = off, "
+ 					"not advertising endpoint");
+ 		return -ENOTSUP;
+ 	}
+@@ -1370,38 +1196,23 @@
+ 		memcmp(c->reserved, m4.reserved, sizeof(m4.reserved)) == 0;
+ }
+ 
+-/* Resolves the effective allow-devices policy with the SAME layered
+- * precedence (hardcoded default "m4" < ~/.config/momentum4/
+- * aptx-adaptive.conf's `allow-devices` key < M4_ADAPTIVE_ALLOW_DEVICES
+- * environment variable) as every other setting in this file -- mirrors
+- * adaptive_resolve_helper_paths() above. Returns true only for the
+- * explicit "any" opt-out. */
+-static bool adaptive_resolve_allow_devices_any(void)
++/* Resolves the effective [adaptive] allow-devices policy
++ * from momentum4.conf via the shared config bridge (common/m4-conf.c) --
++ * mirrors adaptive_resolve_helper_paths() above. Only ANY skips the
++ * fingerprint check entirely; MAC_LIST is treated the SAME as FINGERPRINT
++ * here (this codec's select_config()/validate_config() never have a
++ * struct spa_bt_device -- see adaptive_caps_match_m4_fingerprint()'s own
++ * comment -- so they cannot check a MAC address at all; that half of
++ * the "identity fingerprint, and optionally MAC" policy is enforced by the
++ * separate bluez5-dbus.c gate, patch 0014, which DOES have device identity).
++ * A malformed allow-devices value falls back to FINGERPRINT (the safe
++ * default), same "never fatal" contract as the rest of this codec's config. */
++static enum m4_device_policy_mode adaptive_resolve_allow_devices_mode(void)
+ {
+-	struct m4_ah_user_config ucfg;
+-	char config_path[M4_AH_CONFIG_PATH_MAX];
+-	const char *env;
+-	bool any = false; /* safe default: m4 only */
+-
+-	m4_ah_user_config_defaults(&ucfg);
+-	m4_ah_user_config_default_path(config_path, sizeof(config_path));
+-	m4_ah_user_config_load_file(&ucfg, config_path);
+-
+-	if (ucfg.have_allow_devices)
+-		any = ucfg.allow_devices_any;
+-
+-	env = getenv("M4_ADAPTIVE_ALLOW_DEVICES");
+-	if (env && *env) {
+-		if (!strcasecmp(env, "any"))
+-			any = true;
+-		else if (!strcasecmp(env, "m4"))
+-			any = false;
+-		else if (aptx_adaptive_log)
+-			spa_log_warn(aptx_adaptive_log,
+-					"aptx_adaptive: ignoring unknown M4_ADAPTIVE_ALLOW_DEVICES=%s "
+-					"(expected m4 or any)", env);
+-	}
+-	return any;
++	struct m4_ah_effective_config ecfg;
++
++	m4_ah_effective_config_load(&ecfg);
++	return (enum m4_device_policy_mode)ecfg.allow_devices_mode;
+ }
+ 
+ /*
+@@ -1440,20 +1251,20 @@
+ 	if (info && info->rate != 0 && info->rate != 48000)
+ 		return -ENOTSUP;
+ 
+-	/* allow-devices=m4 (default) -- see adaptive_caps_match_m4_fingerprint()'s
+-	 * own comment for exactly which bytes and why. Without this check, ANY
+-	 * peer offering vendor 0x000000D7/codec 0x00AD at 48 kHz/JOINT would be
+-	 * accepted, not just MOMENTUM 4. */
+-	if (!adaptive_resolve_allow_devices_any() &&
++	/* allow-devices=adk-stereo (default, "m4" alias) --
++	 * see adaptive_caps_match_m4_fingerprint()'s own comment for exactly
++	 * which bytes and why. Without this check, ANY peer offering vendor
++	 * 0x000000D7/codec 0x00AD at 48 kHz/JOINT would be accepted. */
++	if (adaptive_resolve_allow_devices_mode() != M4_DEVICE_POLICY_ANY &&
+ 			!adaptive_caps_match_m4_fingerprint(&remote)) {
+ 		if (aptx_adaptive_log)
+ 			spa_log_info(aptx_adaptive_log,
+-					"aptx_adaptive: remote capabilities do not match the MOMENTUM 4 "
+-					"fingerprint (allow-devices=m4, the default) -- refusing to "
+-					"negotiate aptx_adaptive with this peer, falling back to the "
+-					"next codec in priority order (aptX HD); set allow-devices=any "
+-					"in ~/.config/momentum4/aptx-adaptive.conf or "
+-					"M4_ADAPTIVE_ALLOW_DEVICES=any to opt out");
++					"aptx_adaptive: remote capabilities do not match the "
++					"ADK-stereo-headset fingerprint (allow-devices=adk-stereo, "
++					"the default) -- refusing to negotiate aptx_adaptive with "
++					"this peer, falling back to the next codec in priority "
++					"order (aptX HD); set [adaptive] allow-devices=any in "
++					"momentum4.conf to opt out");
+ 		return -ENOTSUP;
+ 	}
+ 
+@@ -1618,11 +1429,19 @@
+ 	struct adaptive_park_reap_args *args;
+ 	pthread_t tid;
+ 	pthread_attr_t attr;
++	struct m4_ah_effective_config ecfg;
+ 
+ 	if (this->bridge == NULL || this->saved_config_len == 0)
+ 		return false; /* nothing to reuse, or config too large to key on */
+ 
+-	grace_ms = adaptive_getenv_u32("M4_ADAPTIVE_RECONNECT_GRACE_MS", 1500);
++	/* [adaptive] reconnect-grace-ms (common/m4-conf-keys.def), replacing
++	 * the old M4_ADAPTIVE_RECONNECT_GRACE_MS environment variable. Loaded
++	 * independently here (codec_deinit_adaptive()'s call, not RT, not tied
++	 * to whatever codec_init_adaptive() resolved for this same instance --
++	 * a config change between init and deinit is expected to apply here on
++	 * the next deinit, same as everywhere else in this codec). */
++	m4_ah_effective_config_load(&ecfg);
++	grace_ms = (uint32_t)ecfg.reconnect_grace_ms;
+ 	if (grace_ms == 0)
+ 		return false; /* explicit opt-out: old behaviour */
+ 
+@@ -1696,14 +1515,15 @@
+  * (codec_init_adaptive()).
+  *
+  * `mode`/`latency_adjust_ms` are NOT part of the AVDTP `config` bytes -- they
+- * come from ~/.config/momentum4/aptx-adaptive.conf and M4_ADAPTIVE_MODE/
+- * M4_ADAPTIVE_LATENCY_ADJUST_MS, resolved fresh by the caller via
+- * adaptive_resolve_mode_and_latency() BEFORE calling this function. Omitting
+- * them from the match was a real bug caught by test/unit_test.c's ll1 check:
+- * a park/reclaim keyed on (mtu, config) alone would silently hand back an
+- * ll0-configured bridge (wrong SSRC/TTP/TS) to a caller that asked for ll1
+- * via M4_ADAPTIVE_MODE, because config_len/config bytes are identical in
+- * both modes -- the AVDTP config does not encode ll0 vs ll1 at all. */
++ * come from momentum4.conf's [adaptive] section (m4-adaptive-conf-
++ * bridge.h), resolved fresh by the caller (codec_init_adaptive() loads
++ * `ecfg` once at the top of that function and passes ecfg.mode/
++ * ecfg.latency_adjust_ms straight through) BEFORE calling this function.
++ * Omitting them from the match was a real bug caught by test/unit_test.c's
++ * ll1 check: a park/reclaim keyed on (mtu, config) alone would silently
++ * hand back an ll0-configured bridge (wrong SSRC/TTP/TS) to a caller that
++ * asked for ll1, because config_len/config bytes are identical in both
++ * modes -- the AVDTP config does not encode ll0 vs ll1 at all. */
+ static struct impl_adaptive *adaptive_try_reclaim(size_t mtu, const void *config, size_t config_len,
+ 		enum m4_ah_mode mode, int32_t latency_adjust_ms)
+ {
+@@ -1729,65 +1549,27 @@
+ 	return reclaimed;
+ }
+ 
+-/* Resolves ONLY the two config knobs that are not part of the AVDTP `config`
+- * bytes but still change encoder/heartbeat behaviour (mode: ll0 vs ll1;
+- * latency_adjust_ms), using the exact same file/env precedence as the main
+- * codec_init_adaptive() body below (~/.config/momentum4/aptx-adaptive.conf,
+- * then M4_ADAPTIVE_MODE/M4_ADAPTIVE_LATENCY_ADJUST_MS). Factored out so
+- * BOTH the pre-reclaim-check call site (which must know these before it can
+- * safely decide to reuse a parked bridge) and the main
+- * fresh-init body compute them identically -- byte for byte, not just "the
+- * same in practice" -- instead of two independently-maintained copies of the
+- * same precedence logic drifting apart over time. Not RT (codec_init() is
+- * only ever called at (re)connect boundaries); one extra best-effort config
+- * file read here is negligible, same reasoning already applied to
+- * helper_paths/stats resolution below reading the same file independently. */
+-static void adaptive_resolve_mode_and_latency(enum m4_ah_mode *out_mode, int32_t *out_latency_adjust_ms)
+-{
+-	struct m4_ah_user_config ucfg;
+-	char config_path[M4_AH_CONFIG_PATH_MAX];
+-	const char *env_mode;
+-	enum m4_ah_mode mode;
+-	int32_t latency_adjust_ms;
+-
+-	m4_ah_user_config_defaults(&ucfg);
+-	m4_ah_user_config_default_path(config_path, sizeof(config_path));
+-	m4_ah_user_config_load_file(&ucfg, config_path); /* best-effort; logged by the main body, not here */
+-
+-	mode = ucfg.have_mode ? ucfg.mode : M4_ADAPTIVE_DEFAULT_MODE;
+-	env_mode = getenv("M4_ADAPTIVE_MODE");
+-	if (env_mode && *env_mode) {
+-		if (!strcasecmp(env_mode, "ll0"))
+-			mode = M4_AH_MODE_LL0;
+-		else if (!strcasecmp(env_mode, "ll1"))
+-			mode = M4_AH_MODE_LL1;
+-		/* Unknown value: silently keep `mode` as resolved so far here (no
+-		 * spa_log_warn -- this helper is also called from the pre-reclaim
+-		 * check, where warning twice per init() would be noise); the main
+-		 * body below performs the identical getenv()+strcasecmp() sequence
+-		 * again and DOES warn once, from the one place that matters for a
+-		 * human reading the log. */
+-	}
+-
+-	latency_adjust_ms = ucfg.have_latency_adjust_ms ?
+-			ucfg.latency_adjust_ms : M4_ADAPTIVE_DEFAULT_LATENCY_ADJUST_MS;
+-	latency_adjust_ms = adaptive_getenv_i32("M4_ADAPTIVE_LATENCY_ADJUST_MS", latency_adjust_ms);
+-
+-	*out_mode = mode;
+-	*out_latency_adjust_ms = latency_adjust_ms;
+-}
+-
+ static void *codec_init_adaptive(const struct media_codec *codec, uint32_t flags,
+ 		void *config, size_t config_len, const struct spa_audio_info *info,
+ 		void *props, size_t mtu)
+ {
+ 	struct impl_adaptive *this;
+ 	struct m4_ah_bridge_config bcfg;
+-
+-	if (adaptive_getenv_bool("M4_ADAPTIVE_DISABLE", false)) {
++	struct m4_ah_effective_config ecfg;
++
++	/* ONE load of the full layered config for this whole
++	 * codec_init_adaptive() call -- every field below (mode, latency,
++	 * heartbeat, helper paths/mode, timeouts, ring sizing, stats, RT
++	 * priorities, allow-devices) comes from this single `ecfg`, used both
++	 * for the pre-reclaim check just below and the main init body further
++	 * down (previously two-to-four independent getenv()/m4_ah_user_config
++	 * reads). */
++	m4_ah_effective_config_load(&ecfg);
++
++	if (!ecfg.enabled) {
+ 		if (aptx_adaptive_log)
+ 			spa_log_info(aptx_adaptive_log,
+-					"aptx_adaptive: disabled via M4_ADAPTIVE_DISABLE");
++					"aptx_adaptive: disabled via [adaptive] enable = off");
+ 		errno = ENOTSUP;
+ 		return NULL;
+ 	}
+@@ -1831,24 +1613,17 @@
+ 	 * these same two values -- `resolved_mode`/`resolved_latency_adjust_ms`
+ 	 * are reused a few lines down on the non-reclaimed path too, so this is
+ 	 * not wasted work). */
+-	{
+-		enum m4_ah_mode resolved_mode;
+-		int32_t resolved_latency_adjust_ms;
+-
+-		adaptive_resolve_mode_and_latency(&resolved_mode, &resolved_latency_adjust_ms);
+-
+-		if ((this = adaptive_try_reclaim(mtu, config, config_len,
+-				resolved_mode, resolved_latency_adjust_ms)) != NULL) {
+-			if (aptx_adaptive_log)
+-				spa_log_info(aptx_adaptive_log,
+-						"aptx_adaptive: reclaimed parked bridge for reconnect-grace "
+-						"(mtu=%zu config_len=%zu mode=%s latency_adjust_ms=%d) -- "
+-						"no ENC_INIT, no startup mute",
+-						mtu, config_len,
+-						resolved_mode == M4_AH_MODE_LL0 ? "ll0" : "ll1",
+-						resolved_latency_adjust_ms);
+-			return this;
+-		}
++	if ((this = adaptive_try_reclaim(mtu, config, config_len,
++			ecfg.mode, ecfg.latency_adjust_ms)) != NULL) {
++		if (aptx_adaptive_log)
++			spa_log_info(aptx_adaptive_log,
++					"aptx_adaptive: reclaimed parked bridge for reconnect-grace "
++					"(mtu=%zu config_len=%zu mode=%s latency_adjust_ms=%d) -- "
++					"no ENC_INIT, no startup mute",
++					mtu, config_len,
++					ecfg.mode == M4_AH_MODE_LL0 ? "ll0" : "ll1",
++					ecfg.latency_adjust_ms);
++		return this;
+ 	}
+ 
+ 	if ((this = calloc(1, sizeof(*this))) == NULL)
+@@ -1857,61 +1632,34 @@
+ 	this->mtu = mtu;
+ 	this->strip_ota = adaptive_getenv_bool("M4_ADAPTIVE_STRIP_OTA", true);
+ 
+-	/* User config file (loaded once, at init()): ~/.config/momentum4/aptx-adaptive.conf
+-	 * (or $M4_ADAPTIVE_CONFIG / $XDG_CONFIG_HOME override, see
+-	 * m4-adaptive-config.h). Precedence, lowest to highest, matching the
+-	 * existing env-var-override style used everywhere else in this codec:
+-	 * hardcoded default < config file < M4_ADAPTIVE_* environment variable.
+-	 * A missing/unreadable file is not an error -- most installs will not
+-	 * have created one. `ucfg`'s buffers only need to stay alive for the
+-	 * m4_ah_bridge_start() call below (it strdup()s any strings it keeps). */
++	/* Everything below comes from the single `ecfg` loaded at
++	 * the top of this function -- momentum4.conf's [adaptive]/[helper]/
++	 * [stats] sections via common/m4-conf.c, with the legacy
++	 * ~/.config/momentum4/aptx-adaptive.conf read only as a fallback (see
++	 * m4-adaptive-conf-bridge.h's own doc comment for exactly when). */
+ 	{
+-		struct m4_ah_user_config ucfg;
+ 		struct m4_ah_heartbeat_cfg hcfg;
+-		struct adaptive_helper_paths helper_paths;
+-		struct adaptive_stats_paths stats; /* see its use below --
+-			* must outlive the m4_ah_bridge_start() call, so it lives in this
+-			* same enclosing block, exactly like helper_paths (a stray nested
+-			* '{ }' around just this variable previously made it go out of
+-			* scope BEFORE m4_ah_bridge_start() read bcfg.stats_path -- caught
+-			* by ASan as a stack-use-after-scope in strdup(), fixed here). */
+-		char config_path[M4_AH_CONFIG_PATH_MAX];
+-		const char *env_mode;
+ 		int32_t period_min;
+ 
+-		m4_ah_user_config_defaults(&ucfg);
+-		m4_ah_user_config_default_path(config_path, sizeof(config_path));
+-		if (m4_ah_user_config_load_file(&ucfg, config_path) && aptx_adaptive_log)
+-			spa_log_info(aptx_adaptive_log, "aptx_adaptive: loaded config file %s",
+-					config_path);
+-
+-		this->mode = ucfg.have_mode ? ucfg.mode : M4_ADAPTIVE_DEFAULT_MODE;
+-		env_mode = getenv("M4_ADAPTIVE_MODE");
+-		if (env_mode && *env_mode) {
+-			if (!strcasecmp(env_mode, "ll0"))
+-				this->mode = M4_AH_MODE_LL0;
+-			else if (!strcasecmp(env_mode, "ll1"))
+-				this->mode = M4_AH_MODE_LL1;
+-			else if (aptx_adaptive_log)
+-				spa_log_warn(aptx_adaptive_log,
+-						"aptx_adaptive: ignoring unknown M4_ADAPTIVE_MODE=%s "
+-						"(expected ll0 or ll1)", env_mode);
+-		}
+-
+-		this->latency_adjust_ms = ucfg.have_latency_adjust_ms ?
+-				ucfg.latency_adjust_ms : M4_ADAPTIVE_DEFAULT_LATENCY_ADJUST_MS;
+-		this->latency_adjust_ms = adaptive_getenv_i32("M4_ADAPTIVE_LATENCY_ADJUST_MS",
+-				this->latency_adjust_ms);
++		if (ecfg.used_legacy_file && aptx_adaptive_log)
++			spa_log_info(aptx_adaptive_log,
++					"aptx_adaptive: momentum4.conf has no [adaptive] section yet -- "
++					"using legacy config file %s (migrate with `momentum4 config "
++					"migrate` when available)", ecfg.legacy_path);
++
++		this->mode = ecfg.mode;
++		this->latency_adjust_ms = ecfg.latency_adjust_ms;
++		this->stall_ms = ecfg.stall_ms;
++		this->warmup_blocks = (uint32_t)ecfg.warmup_blocks;
++		this->btq_threshold_ms = ecfg.btq_threshold_ms;
++		this->ring_target_frames = ecfg.ring_target_frames > 0 ? (unsigned)ecfg.ring_target_frames : 1u;
++		this->ring_slots = ecfg.ring_slots > 0 ? (unsigned)ecfg.ring_slots : M4_AH_RING_SLOTS_DEFAULT;
++		if (this->ring_slots > M4_AH_RING_SLOTS_MAX)
++			this->ring_slots = M4_AH_RING_SLOTS_MAX;
+ 
+ 		m4_ah_heartbeat_cfg_defaults(&hcfg);
+-		hcfg.enabled = ucfg.have_heartbeat ? ucfg.heartbeat_enabled :
+-				M4_ADAPTIVE_DEFAULT_HEARTBEAT_ENABLED;
+-		hcfg.enabled = adaptive_getenv_bool("M4_ADAPTIVE_HEARTBEAT", hcfg.enabled);
+-		period_min = ucfg.have_resync_period_min ? ucfg.resync_period_min :
+-				M4_ADAPTIVE_DEFAULT_RESYNC_PERIOD_MIN;
+-		period_min = adaptive_getenv_i32("M4_ADAPTIVE_RESYNC_PERIOD_MIN", period_min);
+-		if (period_min <= 0)
+-			period_min = M4_ADAPTIVE_DEFAULT_RESYNC_PERIOD_MIN;
++		hcfg.enabled = ecfg.heartbeat_enabled;
++		period_min = ecfg.resync_period_min > 0 ? ecfg.resync_period_min : 10;
+ 		hcfg.period_s = (double)period_min * 60.0;
+ 
+ 		m4_ah_heartbeat_init(&this->hb, &hcfg, this->mode, this->latency_adjust_ms,
+@@ -1926,82 +1674,67 @@
+ 					m4_ah_heartbeat_base_target_ms(this->mode) + this->latency_adjust_ms,
+ 					this->latency_adjust_ms, hcfg.enabled ? "on" : "off", period_min);
+ 
+-		/* Resolved via the SAME helper (and hence the same default/file/env
+-		 * precedence, byte for byte) as codec_fill_caps_adaptive()'s
+-		 * pre-check above -- see adaptive_resolve_helper_paths()'s comment
+-		 * for why that matters. `helper_paths` must outlive the
+-		 * m4_ah_bridge_start() call below (it strdup()s these before
+-		 * returning); it is declared in this same enclosing block, so that
+-		 * is automatic. Re-reads the (small, best-effort) config file a
+-		 * second time vs. `ucfg` above -- negligible cost at codec_init()
+-		 * time (not RT), deliberately kept simple/independent rather than
+-		 * threading it through the mode/heartbeat block above. */
+-		adaptive_resolve_helper_paths(&helper_paths);
+ 		spa_zero(bcfg);
+-		bcfg.mode = helper_paths.mode;
+-		bcfg.qemu_path = helper_paths.qemu;
+-		bcfg.loader_path = helper_paths.loader;
+-		bcfg.capi_path = helper_paths.capi;
+-		bcfg.socket_path = helper_paths.socket_path;
+-		bcfg.connect_timeout_ms = adaptive_getenv_u32("M4_ADAPTIVE_HELPER_CONNECT_TIMEOUT_MS", 0);
++		bcfg.mode = ecfg.helper_mode_is_socket ? M4_AH_HELPER_MODE_SOCKET : M4_AH_HELPER_MODE_SPAWN;
++		bcfg.qemu_path = ecfg.helper_qemu_path;
++		bcfg.loader_path = ecfg.helper_loader_path;
++		bcfg.capi_path = ecfg.helper_capi_path;
++		bcfg.socket_path = ecfg.helper_socket_path;
++		bcfg.connect_timeout_ms = (uint32_t)ecfg.helper_connect_timeout_ms;
+ 		bcfg.strip_ota_header = this->strip_ota;
+-		bcfg.helper_timeout_ms = adaptive_getenv_u32("M4_ADAPTIVE_HELPER_TIMEOUT_MS",
+-				M4_ADAPTIVE_DEFAULT_HELPER_TIMEOUT_MS);
+-		bcfg.auto_restart = adaptive_getenv_bool("M4_ADAPTIVE_HELPER_AUTORESTART", true);
+-		/* MODE == SOCKET: rt_priority/cpu_affinity_list are intentionally
+-		 * still read from the same env vars for source-level consistency,
+-		 * but the bridge ignores both in socket mode (see
++		bcfg.helper_timeout_ms = (uint32_t)ecfg.helper_frame_timeout_ms;
++		bcfg.startup_timeout_ms = (uint32_t)ecfg.helper_startup_timeout_ms;
++		bcfg.auto_restart = ecfg.helper_autorestart;
++		/* MODE == SOCKET: rt_priority/cpu_affinity_list/debug_log are
++		 * intentionally still resolved for source-level consistency, but
++		 * the bridge ignores all three in socket mode (see
+ 		 * m4-adaptive-bridge.h) -- the equivalent knobs live in
+-		 * systemd/momentum4-helper@.service.in instead. */
+-		bcfg.rt_priority = (int)adaptive_getenv_u32("M4_ADAPTIVE_HELPER_RTPRIO", 10);
+-		bcfg.cpu_affinity_list = adaptive_getenv_str("M4_ADAPTIVE_HELPER_CPU_LIST", NULL);
+-
+-		/* "RT for the bridge's IO thread": unlike rt_priority/cpu_affinity_list just
+-		 * above (SPAWN-mode-only, applied to the qemu-hexagon CHILD),
+-		 * io_thread_rt_priority applies to THIS bridge's own IO thread in
+-		 * BOTH helper modes -- see m4-adaptive-bridge.h's doc comment on
+-		 * that field for why pthread_setschedparam() (not
+-		 * spa_thread_utils_acquire_rt()) is the only viable mechanism for a
+-		 * bare SPA codec plugin in this PipeWire version. Same
+-		 * default < config-file < env precedence as every other tunable in
+-		 * this function; range-clamped to the valid SCHED_FIFO priority
+-		 * range here (m4-adaptive-config.c's own parser already clamps the
+-		 * config-file value to 0..99, but the env-var override below does
+-		 * not go through that parser, so it needs its own clamp). */
+-		{
+-			int32_t io_rt_priority = ucfg.have_io_rt_priority ? ucfg.io_rt_priority :
+-					M4_ADAPTIVE_DEFAULT_IO_RT_PRIORITY;
+-			io_rt_priority = adaptive_getenv_i32("M4_ADAPTIVE_IO_RT_PRIORITY", io_rt_priority);
+-			if (io_rt_priority < 0)
+-				io_rt_priority = 0;
+-			else if (io_rt_priority > 99)
+-				io_rt_priority = 99;
+-			bcfg.io_thread_rt_priority = (int)io_rt_priority;
+-		}
+-
+-		/* Metrics. `stats` (declared above, alongside
+-		 * helper_paths) must outlive the m4_ah_bridge_start() call below --
+-		 * it strdup()s stats_path/stats_history_path before returning. */
+-		adaptive_resolve_stats_paths(&stats);
+-		if (!stats.disabled) {
+-			bcfg.stats_path = stats.stats_path;
+-			bcfg.stats_history_path = stats.history_path;
+-			bcfg.stats_interval_ms = stats.interval_ms;
++		 * systemd/momentum4-helper@.service.in (SPAWN mode's
++		 * `momentum4 helper-exec` reads the SAME [helper]
++		 * section directly) instead. */
++		bcfg.rt_priority = (int)ecfg.helper_rt_priority;
++		bcfg.cpu_affinity_list = ecfg.helper_cpu_list[0] != '\0' ? ecfg.helper_cpu_list : NULL;
++		bcfg.debug_log = ecfg.helper_debug_log;
++
++		/* "RT for the bridge's IO thread": common/m4-conf-keys.def's own registry
++		 * range (0..99) already validates this, no extra clamp needed here
++		 * (unlike the old env-var override path, which bypassed that
++		 * parser). */
++		bcfg.io_thread_rt_priority = (int)ecfg.io_rt_priority;
++
++		bcfg.fade_in_enabled = ecfg.fade_in_enabled;
++		bcfg.fade_in_frames = ecfg.fade_in_frames;
++		bcfg.ring_slots = ecfg.ring_slots;
++		bcfg.ring_target_frames = ecfg.ring_target_frames;
++		bcfg.ring_trim_sustain_ms = ecfg.ring_trim_sustain_ms;
++		bcfg.ring_trim_hard_cap_ms = ecfg.ring_trim_hard_cap_ms;
++		bcfg.ring_quiet_amp = ecfg.ring_quiet_amp;
++		bcfg.idle_poll_ms = ecfg.idle_poll_ms;
++		bcfg.restart_backoff_min_ms = ecfg.helper_restart_backoff_min_ms;
++		bcfg.restart_backoff_max_ms = ecfg.helper_restart_backoff_max_ms;
++		bcfg.stats_history_lines = ecfg.stats_history_lines;
++		bcfg.stats_history_rotate_every = ecfg.stats_history_rotate_every;
++
++		if (ecfg.stats_enable) {
++			bcfg.stats_path = ecfg.stats_path;
++			bcfg.stats_history_path = ecfg.stats_history_path;
++			bcfg.stats_interval_ms = (uint32_t)ecfg.stats_interval_ms;
+ 		}
+ 		if (aptx_adaptive_log)
+ 			spa_log_info(aptx_adaptive_log,
+-					"aptx_adaptive: stats=%s path=%s history=%s interval_ms=%u",
+-					stats.disabled ? "disabled" : "enabled",
+-					stats.disabled ? "-" : stats.stats_path,
+-					stats.disabled ? "-" : stats.history_path,
+-					(unsigned)stats.interval_ms);
++					"aptx_adaptive: stats=%s path=%s history=%s interval_ms=%u "
++					"ring_slots=%d",
++					ecfg.stats_enable ? "enabled" : "disabled",
++					ecfg.stats_enable ? ecfg.stats_path : "-",
++					ecfg.stats_enable ? ecfg.stats_history_path : "-",
++					(unsigned)ecfg.stats_interval_ms, ecfg.ring_slots);
+ 
+ 		if (aptx_adaptive_log)
+ 			spa_log_info(aptx_adaptive_log,
+ 					"aptx_adaptive: helper-mode=%s %s",
+ 					bcfg.mode == M4_AH_HELPER_MODE_SOCKET ? "socket" : "spawn",
+ 					bcfg.mode == M4_AH_HELPER_MODE_SOCKET ?
+-							helper_paths.socket_path : helper_paths.qemu);
++							ecfg.helper_socket_path : ecfg.helper_qemu_path);
+ 
+ 		this->bridge = m4_ah_bridge_start(aptx_adaptive_log, &bcfg);
+ 		if (this->bridge != NULL) {
+@@ -2088,7 +1821,7 @@
+ 	 * still return -ENOTSUP: there is no bitpool to adjust. */
+ 	struct impl_adaptive *this = data;
+ 	double queue_ms = (double)unsent / M4_ADAPTIVE_BYTES_PER_MS;
+-	if (queue_ms >= M4_ADAPTIVE_BTQ_THRESHOLD_MS)
++	if (queue_ms >= this->btq_threshold_ms)
+ 		this->pending_btq_trigger = true;
+ 	return -ENOTSUP;
+ }
+@@ -2140,7 +1873,7 @@
+ 	 * NEVER let a heartbeat resync anchor M4's TTP onto a packet that is
+ 	 * still sitting behind a backlog in the output ring -- ttp_reset() (see
+ 	 * m4-adaptive-heartbeat.h's file header) anchors on whatever packet
+-	 * carries the blip, so if that packet is already M4_AH_RING_TARGET_FRAMES+
++	 * carries the blip, so if that packet is already the ring target+
+ 	 * stale by the time it is actually sent, the extra ring latency gets
+ 	 * baked into M4's own target delay instead of being drained away. Only
+ 	 * offer a resync once the ring-trim logic in m4_ah_bridge_take_frame()
+@@ -2155,7 +1888,7 @@
+ 	struct m4_ah_bridge_stats hb_ring_st;
+ 	m4_ah_bridge_get_stats(this->bridge, &hb_ring_st);
+ 
+-	if (hb_ring_st.out_ring_count <= M4_AH_RING_TARGET_FRAMES &&
++	if (hb_ring_st.out_ring_count <= this->ring_target_frames &&
+ 			m4_ah_heartbeat_decide(&this->hb, adaptive_now_ms(), &ssrc, &adjust_ms, &reason)) {
+ 		this->stat_heartbeat_events++;
+ 		m4_ah_bridge_note_heartbeat_event(this->bridge); /* metrics file */
+@@ -2214,8 +1947,8 @@
+ 				st.submitted, st.frames_produced, st.output_starved,
+ 				st.input_ring_full_drops, st.output_ring_full_drops,
+ 				st.output_ring_trimmed_frames, st.input_ring_trimmed_ms,
+-				st.in_ring_count, M4_AH_RING_SLOTS, st.in_ring_max_window,
+-				st.out_ring_count, M4_AH_RING_SLOTS, st.out_ring_max_window,
++				st.in_ring_count, this->ring_slots, st.in_ring_max_window,
++				st.out_ring_count, this->ring_slots, st.out_ring_max_window,
+ 				(int)m4_ah_bridge_is_alive(this->bridge),
+ 				m4_ah_bridge_restart_count(this->bridge));
+ 
+@@ -2259,7 +1992,7 @@
+ 	 * relative to the previous one (RT thread starved/descheduled). See
+ 	 * m4-adaptive-heartbeat.h; folded into the heartbeat's observe() call
+ 	 * below, consumed by the *next* start_encode()'s decide() call. */
+-	if (this->encode_calls > 0 && (now - this->last_encode_ms) > M4_ADAPTIVE_STALL_MS)
++	if (this->encode_calls > 0 && (now - this->last_encode_ms) > this->stall_ms)
+ 		trigger_stall = true;
+ 	this->last_encode_ms = now;
+ 
+@@ -2298,7 +2031,7 @@
+ 						"(will keep retrying to restart it in the background "
+ 						"unless M4_ADAPTIVE_HELPER_AUTORESTART=0)");
+ 		}
+-	} else if (this->encode_calls >= M4_ADAPTIVE_WARMUP_BLOCKS) {
++	} else if (this->encode_calls >= this->warmup_blocks) {
+ 		/* Heartbeat trigger #2 ("late"): the helper is alive but did not
+ 		 * have a finished frame ready for this block -- a real gap in what
+ 		 * reaches M4, adaptation of the heartbeat's `late` trigger for the
+@@ -2373,13 +2106,13 @@
+ 	if (!(remote.channel_mode & APTX_ADAPTIVE_CHANNELS_JOINT))
+ 		return -ENOTSUP;
+ 
+-	if (!adaptive_resolve_allow_devices_any() &&
++	if (adaptive_resolve_allow_devices_mode() != M4_DEVICE_POLICY_ANY &&
+ 			!adaptive_caps_match_m4_fingerprint(&remote)) {
+ 		if (aptx_adaptive_log)
+ 			spa_log_warn(aptx_adaptive_log,
+ 					"aptx_adaptive: rejecting SetConfiguration() -- capabilities "
+-					"do not match the MOMENTUM 4 fingerprint (allow-devices=m4, "
+-					"the default)");
++					"do not match the ADK-stereo-headset fingerprint "
++					"(allow-devices=adk-stereo, the default)");
+ 		return -EINVAL;
+ 	}
+ 

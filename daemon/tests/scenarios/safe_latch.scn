@@ -1,0 +1,17 @@
+# safe_latch.scn -- safe-latch overrides both automode and manual writes in
+# every mode, and `momentum4 resume` (here: unlink) restores normal
+# operation -- daemon.h's write-gating matrix, direct scenario-level check.
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0 present 1 1
+0.0 mode auto
+0.0 safe_latch on
+0.0 mic signal-desktop start
+0.4 expect_set_profile_calls 0
+0.4 call on
+0.4 expect_response_err
+0.4 expect_set_profile_calls 0
+0.5 safe_latch off
+0.5 call on
+0.5 expect_response_ok
+0.5 expect_set_profile_calls 1
+0.5 expect_profile headset-head-unit

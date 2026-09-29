@@ -1,0 +1,68 @@
+# mic_toggle.scn -- task scenario ("tap = mic",
+# follow-up): tap -> mute, tap -> unmute, CHUP -> call off
+# with automatic unmute.
+#
+# The "tap" step itself uses the "mic_ctl" DSL command (ctl.sock `MIC
+# ON|OFF|TOGGLE|STATUS`, cli/mic.c's backend) rather than a gesture/hfp
+# event configured as `mic-toggle`, because scenario_runner.c has no hook to
+# inject non-default momentum4.conf settings text (unlike
+# tests/test_gestures.c's fixture_setup(), which DOES, and is where
+# test_mic_toggle_via_gesture_and_hfp_share_cooldown()/
+# test_mic_ctl_on_off_toggle_status() cover the gesture-*/hfp-* =
+# mic-toggle config wiring itself, own cooldown, and no-route/safe-latch/
+# observe gating). Both paths funnel into the exact same
+# daemon_execute_mic()/set_mic_volume() call in daemon/daemon.c, so this
+# scenario is a faithful end-to-end check of the graph-level effect and the
+# auto-unmute-on-call-off behaviour either way.
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0 present 1 1
+0.0 mode manual
+0.0 expect_profile a2dp-sink
+
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+
+# M4 (re)connected into HFP with AT+VGM already reporting full, unmuted gain
+# -- daemon.c's adapter_fix_mic_volume_if_needed()
+# already forces this on every call-on in the real graph; the fake models it
+# directly here (mirrors mic_volume_after_reconnect.scn's own convention).
+0.0 mic_route 1 1.0 0
+0.0 expect_mic_mute 0
+
+# tap 1: mute -- "M4 button = mute (VGM)": `mic toggle` now
+# writes Route volume 0%/100% (the same wire effect AT+VGM has), not just
+# the local mute flag -- expect_mic_volume added alongside expect_mic_mute
+# to cover that explicitly (previously only mic_mute was asserted here,
+# which would have stayed green even under the old, volume-UNCHANGED bug).
+0.1 mic_ctl toggle
+0.1 expect_response_ok
+0.1 expect_mic_mute 1
+0.1 expect_mic_volume 0.0
+0.1 expect_set_mic_volume_calls 1
+
+# tap 2: unmute
+0.2 mic_ctl toggle
+0.2 expect_response_ok
+0.2 expect_mic_mute 0
+0.2 expect_mic_volume 1.0
+0.2 expect_set_mic_volume_calls 2
+
+# mute again, then M4 hangs up (AT+CHUP, patch 0006) -- call off must
+# happen AND the mic must come back unmuted automatically (task: on call
+# off, the mic is always unmuted), with no extra mic earcon (that
+# is tests/test_gestures.c's test_call_off_forces_mic_unmute()'s job to
+# check directly -- this scenario only has graph-level DSL assertions, no
+# earcon hook).
+0.3 mic_ctl off
+0.3 expect_mic_mute 1
+0.3 expect_mic_volume 0.0
+0.3 expect_set_mic_volume_calls 3
+
+0.4 hfp CHUP
+0.4 expect_profile a2dp-sink
+0.4 expect_call_active 0
+0.4 expect_mic_mute 0
+0.4 expect_mic_volume 1.0
+0.4 expect_set_mic_volume_calls 4

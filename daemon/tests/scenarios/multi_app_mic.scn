@@ -1,0 +1,36 @@
+# multi_app_mic.scn -- signal-desktop holds the mic for the whole scenario
+#, librewolf only
+# during an actual call, pw-record grabs it once briefly. FIXED ("Signal-
+# holder" bug: this is a bug, not expected behaviour): entry (0.35, driven by mic_active, unchanged --
+# signal-desktop alone DOES still start HFP, same as any other app) still
+# works exactly as before; but core/automode.c's hold_active (fed via
+# pw/micdetect.c's m4_mic_decide_hold(), which excludes known long-lived
+# holders like signal-desktop) now drives the EXIT debounce instead of
+# mic_active -- so once librewolf's real call ends (3.0) and no other
+# non-holder candidate is present, automode exits HFP after off_debounce_s
+# (2.5s) even though signal-desktop's leftover stream is still there.
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0  present 1 1
+0.0  mode auto
+0.0  mic signal-desktop start
+0.35 expect_set_profile_calls 1
+0.35 expect_profile headset-head-unit
+1.0  mic librewolf start
+1.0  expect_set_profile_calls 1
+2.0  mic pw-record start
+2.0  expect_set_profile_calls 1
+2.5  mic pw-record stop
+2.5  expect_set_profile_calls 1
+3.0  mic librewolf stop
+# off_debounce_s (2.5s) after 3.0 -- hold_active (librewolf, the only
+# non-holder candidate) dropped to false at 3.0, arming the exit even
+# though signal-desktop (mic_active) is still holding the stream.
+5.6  expect_set_profile_calls 2
+5.6  expect_call_active 0
+5.6  expect_profile a2dp-sink
+# signal-desktop finally releases its leftover stream -- mic_active drops
+# to false too, but the call is already off, so this is a no-op.
+6.0  mic signal-desktop stop
+8.6  expect_set_profile_calls 2
+8.6  expect_profile a2dp-sink
+8.6  expect_call_active 0

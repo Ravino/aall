@@ -1,0 +1,37 @@
+# momentum4-helper.socket.in -- listening socket for the aptX Adaptive LL
+# qemu-hexagon helper, run as its own user-service.
+#
+# Paired with the template momentum4-helper@.service (Accept=yes: one
+# fresh service instance -- one fresh qemu-hexagon process -- per incoming
+# connection, i.e. per m4_ah_bridge_start() from the SPA codec inside
+# WirePlumber).
+#
+# WHY a separate unit (not a child of wireplumber): the stock
+# wireplumber.service ships MemoryDenyWriteExecute=yes, inherited by any
+# forked child's seccomp filter, which makes qemu-hexagon's TCG code
+# buffer mprotect(PROT_EXEC) fail instantly. Running the helper as an
+# independent unit, WITHOUT that hardening directive (see
+# momentum4-helper@.service.in), lets WirePlumber keep its own hardening
+# untouched.
+#
+# No @-substitutions -- installed byte for byte by `momentum4 install`.
+
+[Unit]
+Description=momentum4: aptX Adaptive LL helper (qemu-hexagon) -- listening socket [Sennheiser Momentum 4 / ADK-stereo-compatible only]
+
+[Socket]
+RuntimeDirectory=momentum4
+RuntimeDirectoryPreserve=yes
+ListenStream=%t/momentum4/helper.sock
+# Not group/world-accessible: the socket carries raw PCM and speaks for
+# a proprietary Qualcomm module -- no reason to let other local
+# users in.
+SocketMode=0600
+# One new qemu-hexagon process per connection: WirePlumber
+# opens a new connection on every codec_init_adaptive() (M4 connects,
+# WP restarts, recovery after a helper failure) and always gets
+# a clean process, not state inherited from a previous session.
+Accept=yes
+
+[Install]
+WantedBy=default.target

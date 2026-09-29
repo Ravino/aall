@@ -1,0 +1,416 @@
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -41,6 +41,9 @@
+ #include "upower.h"
+ #include "telephony.h"
+ #include "m4-hfp-events.h" /* momentum4 patch 0006 */
++#include "m4-sco-restore.h" /* momentum4 patch 0008 */
++#include <stdlib.h>
++#include <time.h>
+ 
+ SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.bluez5.native");
+ #undef SPA_LOG_TOPIC_DEFAULT
+@@ -123,6 +126,11 @@
+ 	struct spa_source sco;
+ 	int err;
+ 	bool requesting;
++	/* momentum4 patch 0008: in-place SCO restore after the
++	 * HF (MOMENTUM 4 double tap) released the audio link itself. */
++	struct spa_source m4_restore_timer;
++	struct m4_sco_restore m4_restore;
++	bool m4_restoring;	/* the connect in flight was started by m4_sco_restore_attempt() */
+ };
+ 
+ enum hfp_hf_state {
+@@ -2629,6 +2637,10 @@
+ 
+ static int rfcomm_ag_sync_volume(struct rfcomm *rfcomm, bool later);
+ 
++/* momentum4 patch 0008, definitions after sco_start_source() */
++static void m4_sco_restore_connect_failed(struct spa_bt_transport *t, int err);
++static void m4_sco_restore_connected(struct spa_bt_transport *t);
++
+ static void sco_ready(struct spa_bt_transport *t)
+ {
+ 	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
+@@ -2691,6 +2703,13 @@
+ 
+ done:
+ 	if (td->err) {
++		if (td->m4_restoring) {
++			/* momentum4 patch 0008: our own restore attempt failed --
++			 * not an acquire failure, keep the transport IDLE (no
++			 * node Error event, no error_count), retry or give up. */
++			m4_sco_restore_connect_failed(t, td->err);
++			return;
++		}
+ 		spa_log_debug(backend->log, "transport %p: acquire failed: %s (%d)",
+ 				t, strerror(-td->err), td->err);
+ 		spa_bt_transport_set_state(t, SPA_BT_TRANSPORT_STATE_ERROR);
+@@ -2719,6 +2738,9 @@
+ 	rfcomm_ag_sync_volume(td->rfcomm, true);
+ 
+ 	spa_bt_transport_set_state(t, SPA_BT_TRANSPORT_STATE_ACTIVE);
++
++	if (td->m4_restoring)
++		m4_sco_restore_connected(t); /* momentum4 patch 0008 */
+ }
+ 
+ static void sco_start_source(struct spa_bt_transport *t);
+@@ -2760,12 +2782,17 @@
+ 	return -1;
+ }
+ 
++static void m4_sco_restore_stop(struct spa_bt_transport *t);
++
+ static int sco_destroy_cb(void *data)
+ {
+ 	struct spa_bt_transport *t = data;
+ 	struct transport_data *td = t->user_data;
+ 	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
+ 
++	/* momentum4 patch 0008: released or freed -- nothing left to restore */
++	m4_sco_restore_stop(t);
++
+ 	if (t->sco_io) {
+ 		spa_bt_sco_io_destroy(t->sco_io);
+ 		t->sco_io = NULL;
+@@ -2803,12 +2830,29 @@
+ 	return 0;
+ }
+ 
++static void m4_sco_restore_on_hup(struct spa_bt_transport *t, int sock_err);
++
+ static void sco_event(struct spa_source *source)
+ {
+ 	struct spa_bt_transport *t = source->data;
++	struct transport_data *td = t->user_data;
+ 	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
+ 
+ 	if (source->rmask & (SPA_IO_HUP | SPA_IO_ERR)) {
++		/* momentum4 patch 0008: an ESTABLISHED link went away (not a
++		 * failed connect -- that one is handled in sco_ready()). Read
++		 * the reason (SO_ERROR: ECONNRESET for HCI 0x13 "remote user
++		 * terminated", ETIMEDOUT for 0x08 ...) before the fd is closed. */
++		bool m4_dropped = (t->state == SPA_BT_TRANSPORT_STATE_ACTIVE &&
++				!td->requesting && t->fd >= 0);
++		int m4_err = 0;
++
++		if (m4_dropped) {
++			socklen_t len = sizeof(m4_err);
++			if (getsockopt(t->fd, SOL_SOCKET, SO_ERROR, &m4_err, &len) < 0)
++				m4_err = errno;
++		}
++
+ 		spa_log_debug(backend->log, "transport %p: error on SCO socket: %s", t, strerror(errno));
+ 		sco_ready(t);
+ 		if (source->loop)
+@@ -2819,6 +2863,9 @@
+ 			close(t->fd);
+ 			t->fd = -1;
+ 		}
++
++		if (m4_dropped)
++			m4_sco_restore_on_hup(t, m4_err);
+ 	}
+ 
+ 	if (source->rmask & (SPA_IO_OUT | SPA_IO_IN)) {
+@@ -2860,6 +2907,283 @@
+ 	spa_loop_add_source(backend->main_loop, &td->sco);
+ }
+ 
++/* ------------------------------------------------------------------------
++ * momentum4 patch 0008: in-place SCO restore.
++ *
++ * MOMENTUM 4 releases the eSCO link itself on a double tap in HFP (HCI
++ * Disconnection Complete, reason 0x13, no AT command). Upstream then leaves
++ * the transport acquired but IDLE while sco-sink/sco-source keep running
++ * without I/O -- silence until the profile changes. Here: if the transport is
++ * still in use, reconnect the SCO socket after a short delay using the same
++ * path as sco_acquire_cb() (sco_do_connect + sco_start_source + sco_ready);
++ * on success the transport goes ACTIVE again and both nodes restart their
++ * I/O by themselves (transport_state_changed -> transport_start). Policy
++ * (delays, retries, rate limit) lives in m4-sco-restore.c. momentum4d is
++ * told SCODROP / SCOUP / SCOFAIL over hfp-events.sock (m4-hfp-events.c).
++ * All of this runs on the main loop, like the rest of the SCO state code.
++ * ------------------------------------------------------------------------ */
++
++static uint64_t m4_now_ms(void)
++{
++	struct timespec ts;
++
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
++}
++
++static enum m4_sco_restore_mode m4_sco_restore_mode_now(void)
++{
++	return m4_sco_restore_mode_parse(getenv(M4_SCO_RESTORE_ENV));
++}
++
++static const char *m4_dev_name(struct spa_bt_transport *t)
++{
++	if (t->device == NULL)
++		return NULL;
++	return t->device->name ? t->device->name : t->device->alias;
++}
++
++static const char *m4_dev_addr(struct spa_bt_transport *t)
++{
++	return t->device ? t->device->address : NULL;
++}
++
++static void m4_sco_restore_timer_stop(struct spa_bt_transport *t)
++{
++	struct transport_data *td = t->user_data;
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct itimerspec ts;
++
++	if (td->m4_restore_timer.data == NULL)
++		return;
++
++	if (td->m4_restore_timer.loop)
++		spa_loop_remove_source(backend->main_loop, &td->m4_restore_timer);
++	spa_zero(ts);
++	spa_system_timerfd_settime(backend->main_system, td->m4_restore_timer.fd, 0, &ts, NULL);
++	spa_system_close(backend->main_system, td->m4_restore_timer.fd);
++	td->m4_restore_timer.data = NULL;
++}
++
++static void m4_sco_restore_attempt(struct spa_bt_transport *t);
++
++static void m4_sco_restore_timer_event(struct spa_source *source)
++{
++	struct spa_bt_transport *t = source->data;
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++	uint64_t exp;
++
++	if (spa_system_timerfd_read(backend->main_system, source->fd, &exp) < 0)
++		spa_log_warn(backend->log, "error reading timerfd: %s", strerror(errno));
++
++	m4_sco_restore_timer_stop(t);
++	if (td->m4_restoring && td->requesting) {
++		/* connect watchdog: eSCO setup did not complete in time (the
++		 * kernel's own SCO connect timeout is much longer) */
++		m4_sco_restore_connect_failed(t, -ETIMEDOUT);
++		return;
++	}
++	m4_sco_restore_attempt(t);
++}
++
++static int m4_sco_restore_timer_start(struct spa_bt_transport *t, int delay_ms)
++{
++	struct transport_data *td = t->user_data;
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct itimerspec ts;
++
++	if (td->m4_restore_timer.data == NULL) {
++		int fd = spa_system_timerfd_create(backend->main_system,
++				CLOCK_MONOTONIC, SPA_FD_CLOEXEC | SPA_FD_NONBLOCK);
++		if (fd < 0)
++			return fd;
++		td->m4_restore_timer.data = t;
++		td->m4_restore_timer.func = m4_sco_restore_timer_event;
++		td->m4_restore_timer.fd = fd;
++		td->m4_restore_timer.mask = SPA_IO_IN;
++		td->m4_restore_timer.rmask = 0;
++		spa_loop_add_source(backend->main_loop, &td->m4_restore_timer);
++	}
++	spa_zero(ts);
++	ts.it_value.tv_sec = delay_ms / SPA_MSEC_PER_SEC;
++	ts.it_value.tv_nsec = (delay_ms % SPA_MSEC_PER_SEC) * SPA_NSEC_PER_MSEC;
++	spa_system_timerfd_settime(backend->main_system, td->m4_restore_timer.fd, 0, &ts, NULL);
++	return 0;
++}
++
++/* Released / destroyed / profile switched away: drop any pending restore. */
++static void m4_sco_restore_stop(struct spa_bt_transport *t)
++{
++	struct transport_data *td = t->user_data;
++
++	m4_sco_restore_timer_stop(t);
++	if (td->m4_restore.active)
++		m4_sco_restore_cancel(&td->m4_restore);
++	td->m4_restoring = false;
++}
++
++static void m4_sco_restore_give_up(struct spa_bt_transport *t, const char *why)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++
++	spa_log_warn(backend->log, "momentum4: transport %p: SCO restore gave up (%s)", t, why);
++	m4_hfp_events_notify(backend->log, "SCOFAIL", m4_dev_addr(t));
++}
++
++static void m4_sco_restore_schedule_or_give_up(struct spa_bt_transport *t,
++		enum m4_sco_restore_verdict v, int delay_ms, const char *why)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++
++	if (v == M4_SCO_RESTORE_SCHEDULE) {
++		if (m4_sco_restore_timer_start(t, delay_ms) < 0) {
++			m4_sco_restore_cancel(&td->m4_restore);
++			m4_sco_restore_give_up(t, "timerfd");
++			return;
++		}
++		spa_log_info(backend->log, "momentum4: transport %p: SCO restore in %d ms (%s)",
++				t, delay_ms, why);
++	} else if (v == M4_SCO_RESTORE_GIVE_UP) {
++		m4_sco_restore_give_up(t, why);
++	}
++}
++
++/* Still ours to restore? Everything re-checked at attempt time, because the
++ * delay gives the rest of the stack time to release/free/switch. */
++static bool m4_sco_restore_wanted(struct spa_bt_transport *t)
++{
++	struct transport_data *td = t->user_data;
++
++	return t->fd < 0 &&
++		t->state < SPA_BT_TRANSPORT_STATE_PENDING &&
++		t->acquired && t->acquire_refcount > 0 &&
++		!td->requesting &&
++		td->rfcomm != NULL && td->rfcomm->slc_configured &&
++		t->device != NULL && t->device->adapter != NULL &&
++		!(t->profile & SPA_BT_PROFILE_HEADSET_AUDIO_GATEWAY);
++}
++
++static void m4_sco_restore_attempt(struct spa_bt_transport *t)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++	int sock;
++
++	if (!m4_sco_restore_wanted(t)) {
++		spa_log_info(backend->log, "momentum4: transport %p: SCO restore not needed any more "
++				"(state %d, fd %d, refcount %d)", t, t->state, t->fd, t->acquire_refcount);
++		m4_sco_restore_cancel(&td->m4_restore);
++		return;
++	}
++
++	/* The old spa_bt_sco_io still points at the closed fd; the nodes
++	 * already stopped using it (transport_stop on IDLE, synchronous with
++	 * the data loop). Drop it so transport_start() creates a fresh one on
++	 * the new socket, exactly as on first acquire. */
++	if (t->sco_io) {
++		spa_bt_sco_io_destroy(t->sco_io);
++		t->sco_io = NULL;
++	}
++
++	spa_log_info(backend->log, "momentum4: transport %p: restoring SCO to %s (codec %u)",
++			t, m4_dev_addr(t) ? m4_dev_addr(t) : "?", t->codec);
++
++	errno = 0;
++	sock = sco_do_connect(t);
++	if (sock < 0) {
++		m4_sco_restore_connect_failed(t, errno ? -errno : -EIO);
++		return;
++	}
++
++	t->fd = sock;
++	td->requesting = true;
++	td->m4_restoring = true;
++	/* connect watchdog, see m4_sco_restore_timer_event() */
++	if (m4_sco_restore_timer_start(t, M4_SCO_RESTORE_CONNECT_TIMEOUT_MS) < 0)
++		spa_log_warn(backend->log, "momentum4: transport %p: no connect watchdog", t);
++	sco_start_source(t);
++	if (td->err != -EINPROGRESS)
++		sco_ready(t);
++}
++
++static void m4_sco_restore_connect_failed(struct spa_bt_transport *t, int err)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++	enum m4_sco_restore_verdict v;
++	int delay_ms = 0;
++	char why[96];
++
++	m4_sco_restore_timer_stop(t);
++	td->m4_restoring = false;
++	td->requesting = false;
++	if (td->sco.loop)
++		spa_loop_remove_source(backend->main_loop, &td->sco);
++	if (t->fd >= 0) {
++		shutdown(t->fd, SHUT_RDWR);
++		close(t->fd);
++		t->fd = -1;
++	}
++
++	snprintf(why, sizeof(why), "connect failed: %s (%d)", strerror(err < 0 ? -err : err), err);
++	spa_log_info(backend->log, "momentum4: transport %p: SCO restore %s", t, why);
++
++	v = m4_sco_restore_on_result(&td->m4_restore, false, &delay_ms);
++	m4_sco_restore_schedule_or_give_up(t, v, delay_ms, why);
++}
++
++static void m4_sco_restore_connected(struct spa_bt_transport *t)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++
++	m4_sco_restore_timer_stop(t);
++	td->m4_restoring = false;
++	m4_sco_restore_on_result(&td->m4_restore, true, NULL);
++	spa_log_info(backend->log, "momentum4: transport %p: SCO restored (mtu %u/%u)",
++			t, t->read_mtu, t->write_mtu);
++	m4_hfp_events_notify(backend->log, "SCOUP", m4_dev_addr(t));
++}
++
++/* Called from sco_event() after upstream's own HUP handling (fd closed,
++ * transport IDLE, any postponed release already committed). */
++static void m4_sco_restore_on_hup(struct spa_bt_transport *t, int sock_err)
++{
++	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
++	struct transport_data *td = t->user_data;
++	enum m4_sco_restore_mode mode = m4_sco_restore_mode_now();
++	enum m4_sco_restore_verdict v;
++	int delay_ms = 0;
++	char why[96];
++
++	if (!m4_sco_restore_device_is_target(mode, m4_dev_name(t)))
++		return;
++	if (!t->acquired || t->acquire_refcount <= 0)
++		return; /* nobody is using it: not an audio loss */
++
++	snprintf(why, sizeof(why), "remote closed SCO: %s (%d)",
++			sock_err ? strerror(sock_err) : "no error", sock_err);
++	spa_log_info(backend->log, "momentum4: transport %p: %s, refcount %d",
++			t, why, t->acquire_refcount);
++	m4_hfp_events_notify(backend->log, "SCODROP", m4_dev_addr(t));
++
++	if (mode == M4_SCO_RESTORE_MODE_OFF) {
++		/* terminal event right away, so momentum4d can fall back */
++		m4_sco_restore_give_up(t, "disabled by " M4_SCO_RESTORE_ENV);
++		return;
++	}
++	if (!m4_sco_restore_wanted(t))
++		return;
++
++	v = m4_sco_restore_on_drop(&td->m4_restore, m4_now_ms(), &delay_ms);
++	if (v == M4_SCO_RESTORE_GIVE_UP)
++		snprintf(why, sizeof(why), "more than %d restores in %d s",
++				M4_SCO_RESTORE_MAX_EPISODES, M4_SCO_RESTORE_WINDOW_MS / 1000);
++	m4_sco_restore_schedule_or_give_up(t, v, delay_ms, why);
++}
++
+ static void sco_listen_event(struct spa_source *source)
+ {
+ 	struct impl *backend = source->data;
+diff --git a/spa/plugins/bluez5/meson.build b/spa/plugins/bluez5/meson.build
+--- a/spa/plugins/bluez5/meson.build
++++ b/spa/plugins/bluez5/meson.build
+@@ -61,6 +61,10 @@
+   # momentum4d of HFP call-control AT commands backend-native.c answers OK
+   # instead of +CME ERROR because there is no ModemManager.
+   bluez5_sources += ['m4-hfp-events.c']
++  # momentum4 patch 0008 (experimental, out-of-tree only): in-place SCO
++  # restore after the headset released the HFP audio link itself (MOMENTUM 4
++  # double tap).
++  bluez5_sources += ['m4-sco-restore.c']
+ endif
+ 
+ if get_option('bluez5-backend-ofono').allowed()

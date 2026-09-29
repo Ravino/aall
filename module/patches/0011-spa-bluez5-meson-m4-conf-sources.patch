@@ -1,0 +1,84 @@
+diff --git a/spa/plugins/bluez5/meson.build b/spa/plugins/bluez5/meson.build
+--- a/spa/plugins/bluez5/meson.build
++++ b/spa/plugins/bluez5/meson.build
+@@ -30,6 +30,30 @@
+   'midi-parser.c',
+   'midi-node.c',
+   'midi-server.c',
++  # momentum4: shared config + device-identity policy,
++  # used by the [hfp] call-control/sco-restore gates below (see
++  # m4-hfp-events.c/m4-sco-restore.c further down this file) and by the
++  # endpoint_set_configuration() allow-devices gate in bluez5-dbus.c. Same
++  # common/m4-conf.c copied verbatim by prepare-tree.sh as the aptx codec
++  # target below uses -- ONE source of truth, compiled twice (once per
++  # shared object, since SPA plugins are independent .so files).
++  'm4-conf.c',
++  # m4-conf.c links against common/m4-i18n.c's M4_T()/m4_lang (interface-
++  # language selection, see that header) -- neither .so prints user-facing
++  # text itself, but m4-conf.c's registry comment_en/comment_ru lookup
++  # needs the symbol either way.
++  'm4-i18n.c',
++  'm4-device-policy.c',
++]
++
++# See the aptx_dep.found() block further down for the full rationale;
++# defined here (top-level) too since bluez5_sources above now also needs
++# m4-conf.c's @prefix@/@libdir@/@libexecdir@/@datadir@ resolution.
++m4_conf_args = [
++  '-DM4_CONF_PREFIX="' + prefix + '"',
++  '-DM4_CONF_LIBDIR="' + pipewire_libdir + '"',
++  '-DM4_CONF_LIBEXECDIR="' + pipewire_libexecdir + '"',
++  '-DM4_CONF_DATADIR="' + pipewire_datadir + '"',
+ ]
+ 
+ bluez5_interface_src = gnome.gdbus_codegen('bluez5-interface-gen',
+@@ -65,6 +89,10 @@
+   # restore after the headset released the HFP audio link itself (MOMENTUM 4
+   # double tap).
+   bluez5_sources += ['m4-sco-restore.c']
++  # [hfp] momentum4.conf section resolver
++  # (mtime-cached) the three hooks above now read instead of hardcoded
++  # environment variables/always-on behaviour.
++  bluez5_sources += ['m4-hfp-config.c']
+ endif
+ 
+ if get_option('bluez5-backend-ofono').allowed()
+@@ -85,6 +113,7 @@
+ bluez5lib = shared_library('spa-bluez5',
+   bluez5_sources,
+   include_directories : [ configinc ],
++  c_args : m4_conf_args,
+   dependencies : [ spa_dep, bluez5_deps ],
+   link_args : bluez5_link_args,
+   install : true,
+@@ -134,16 +163,23 @@
+   # the top-level meson.build) instead of a literal "/usr/lib/
+   # x86_64-linux-gnu/..." -- portable to any libdir (lib64, lib/aarch64-
+   # linux-gnu, a non-root --prefix, ...), not just Debian amd64.
+-  m4_adaptive_hexagon_dir = pipewire_libdir / 'momentum4' / 'hexagon'
+-  m4_adaptive_args = codec_args + [
+-    '-DM4_ADAPTIVE_DEFAULT_LOADER_PATH="' + (m4_adaptive_hexagon_dir / 'hx_adaptive_loader') + '"',
+-    '-DM4_ADAPTIVE_DEFAULT_CAPI_PATH="' + (m4_adaptive_hexagon_dir / 'capi_v2_aptX_CLHDADV_Encoder.so') + '"',
+-  ]
++  # common/m4-conf.c: common/m4-conf.{c,h}/m4-conf-keys.def are
++  # copied verbatim into this directory by prepare-tree.sh (same mechanism
++  # as m4-src/*.{c,h} just below) -- the single source of truth for every
++  # [adaptive]/[helper]/[stats] default/range/comment stays common/, this
++  # build never duplicates it. `m4_conf_args` (defined at the top of this
++  # file, reused by bluez5lib above) supplies M4_CONF_{PREFIX,LIBDIR,
++  # LIBEXECDIR,DATADIR} so common/m4-conf.c's own @prefix@/@libdir@/
++  # @libexecdir@/@datadir@ placeholder substitution resolves to THIS
++  # PipeWire installation's actual paths instead of its conservative
++  # "/usr/local/..." compiled-in fallback.
+   bluez_codec_aptx = shared_library('spa-codec-bluez5-aptx',
+     [ 'a2dp-codec-aptx.c', 'media-codecs.c', 'm4-adaptive-bridge.c',
+-      'm4-adaptive-heartbeat.c', 'm4-adaptive-config.c' ],
++      'm4-adaptive-heartbeat.c', 'm4-adaptive-config.c',
++      'm4-adaptive-conf-bridge.c', 'm4-device-policy.c', 'm4-conf.c',
++      'm4-i18n.c' ],
+     include_directories : [ configinc ],
+-    c_args : m4_adaptive_args,
++    c_args : codec_args + m4_conf_args,
+     dependencies : [ spa_dep, aptx_dep, sbc_dep, pthread_lib ],
+     install : true,
+     install_dir : spa_plugindir / 'bluez5')

@@ -1,0 +1,68 @@
+# momentum4-helper@.service.in -- one instance per accepted connection on
+# momentum4-helper.socket (Accept=yes there). ExecStart is
+# `momentum4 helper-exec`: it reads [helper] from momentum4.conf itself
+# (qemu/loader/capi paths, rt-priority, nice, cpu-list, start-mute-pkts,
+# loader-env), applies sched_setscheduler()/setpriority()/
+# sched_setaffinity() best-effort (EPERM tolerated), and execve()s
+# qemu-hexagon directly -- so systemd tracks the real qemu-hexagon PID,
+# and there is exactly ONE place (common/m4-conf-keys.def's `[helper]`
+# section) that knows these paths, not a second parser.
+#
+# DELIBERATELY DOES NOT SET MemoryDenyWriteExecute= (default "no"): this
+# unit exists specifically so qemu-hexagon's TCG code generation can
+# mprotect(PROT_EXEC) at runtime, which wireplumber.service's own
+# MemoryDenyWriteExecute=yes would block via seccomp. Everything else
+# below is standard hardening that does NOT interfere with TCG.
+#
+# The bindir below is substituted at build time (see ../meson.build); the result is
+# what `momentum4 install` links into ~/.config/systemd/user/ or copies
+# into PREFIX/lib/systemd/user.
+
+[Unit]
+Description=momentum4: aptX Adaptive LL helper instance (qemu-hexagon) [Sennheiser Momentum 4 / ADK-stereo-compatible only]
+
+[Service]
+Type=exec
+ExecStart=@bindir@/momentum4 helper-exec
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+# Accept=yes on the socket already creates a new instance per connection;
+# reconnection from the SPA codec side (exponential backoff, see
+# m4-adaptive-bridge.c) already manages its own retries -- systemd
+# restarting THIS instance would race that mechanism.
+Restart=no
+
+# ---- Hardening that does not interfere with PROT_EXEC/mprotect (safe for TCG) ----
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+# ProtectSystem=strict already makes the whole filesystem read-only for
+# this process, except RuntimeDirectory=/StateDirectory=/etc --
+# a path-independent substitute for ReadOnlyPaths= pointing at the
+# specific qemu/loader/CAPI directories (their path is determined by
+# config/environment, not at package build time).
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=no
+LockPersonality=yes
+RemoveIPC=yes
+# @system-service -- the same broad, service-appropriate syscall list
+# wireplumber.service itself uses -- deliberately NOT
+# narrowed further (unlike MemoryDenyWriteExecute=yes, which under the
+# hood does exactly that for mmap/mprotect).
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# ---- Ceilings for helper-exec's real-time scheduling ----
+# (the unit only sets the ceiling LimitRTPRIO=50 -- anything above the
+# limit is clamped with a warning; the actual priority/affinity/nice is
+# set by `momentum4 helper-exec` from `[helper]` in momentum4.conf, not the unit).
+LimitRTPRIO=50
+LimitMEMLOCK=infinity
+# RLIMIT_NICE=25 => the allowed minimum nice is 20-25 = -5 (systemd.exec(5)),
+# matching the compiled-in default for `[helper] nice`.
+LimitNICE=25

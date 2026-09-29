@@ -1,0 +1,49 @@
+# momentum4d.service.in -- template for the momentum4 daemon's own user
+# unit ("momentum4-* unit templates"). Resolved at BUILD time by meson's
+# configure_file() (see ../meson.build) into build/systemd/momentum4d.service,
+# with the bindir below substituted for the real install prefix's bin
+# directory -- the RESULT of that substitution (not this .in file) is what
+# `momentum4 install` links into ~/.config/systemd/user/ (or copies into
+# PREFIX/lib/systemd/user for a system-wide `make install`).
+
+[Unit]
+Description=momentum4: core (M4 graph, callfsm, automode) -- Sennheiser Momentum 4 via aptX Adaptive
+Documentation=man:momentum4(1)
+# After pipewire/wireplumber (needs a live graph), but NOT BindsTo/PartOf
+# either of them: the daemon survives their restart on its own, reconnecting
+# at a fixed retry interval (`[daemon] graph-retry-s`) -- the daemon
+# never restarts pipewire/wireplumber and does not depend on them being
+# alive, so it stays alive/observable itself.
+After=pipewire.service wireplumber.service
+PartOf=momentum4.target
+StartLimitIntervalSec=120
+StartLimitBurst=10
+
+[Service]
+Type=notify
+WatchdogSec=30
+ExecStart=@bindir@/momentum4 daemon
+Restart=always
+RestartSec=2
+RuntimeDirectory=momentum4
+RuntimeDirectoryPreserve=yes
+ReadWritePaths=%t/momentum4
+
+Nice=5
+MemoryMax=64M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+SyslogIdentifier=momentum4d
+
+[Install]
+WantedBy=momentum4.target

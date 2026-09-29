@@ -1,0 +1,20 @@
+# restart_mid_call.scn -- momentum4d restarts (crash-restart/manual
+# `systemctl restart`) while a call is active. call-state + mode persist on
+# disk (core/state.h) and must be picked up correctly on the next mic edge,
+# WITHOUT a redundant/double set_profile() call.
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0  present 1 1
+0.0  mode auto
+0.0  mic signal-desktop start
+0.35 expect_profile headset-head-unit
+0.35 expect_call_active 1
+0.4  restart
+0.4  expect_mode auto
+0.4  expect_call_active 1
+0.4  expect_open_calls 2
+0.5  mic signal-desktop start
+0.5  expect_set_profile_calls 1
+0.6  mic signal-desktop stop
+3.1  expect_set_profile_calls 2
+3.1  expect_profile a2dp-sink
+3.1  expect_call_active 0

@@ -1,0 +1,51 @@
+# 51-m4-no-suspend.conf.in -- template for
+#   ~/.config/wireplumber/wireplumber.conf.d/51-m4-no-suspend.conf
+#
+# NOT processed by meson's configure_file() (unlike the systemd/*.in
+# templates and wireplumber/99-m4-adaptive-overlay.conf.in) -- this file
+# is installed RAW to @datadir@/momentum4/wireplumber/ and substituted at
+# RUNTIME by `momentum4 install`/`momentum4 enable`, because the one
+# placeholder below depends on `[device] address`, which can be "auto"
+# (BlueZ discovery, per common/m4-conf-keys.def) and is only known once a
+# real momentum4.conf is read on the machine being installed to -- a build
+# machine cannot know it in advance.
+#
+# @M4_ADDRESS_UNDERSCORE@ -- the resolved MAC address (`[device] address`,
+# or its "auto"-discovered value) with every ':' replaced by '_', e.g.
+# "00_1B_66_00_00_01" -- matches WirePlumber's own bluez.lua node-naming
+# convention (`name:gsub("([^%w_%-%.])", "_")`). Substituted by a plain
+# byte-for-byte find/replace in util/wp_overlay.c.
+#
+# WHAT THIS FIXES: WirePlumber's stock node/suspend-node.lua sends every
+# audio node a Suspend command after `session.suspend-timeout-seconds`
+# (default 5 s) of being idle. For this device's bluez5 sink node that
+# tears down the WHOLE aptX Adaptive encoder (codec_deinit_adaptive() ->
+# helper connection closed) and releases the AVDTP transport via D-Bus --
+# every real screen-reader pause longer than 5 s would otherwise force a
+# full re-negotiation on the next phrase (crackle + the headset
+# re-anchoring its TTP clock). Setting session.suspend-timeout-seconds=0
+# on this device's own sink node ONLY (matched by node.name, not by
+# device.name) disables that Suspend for this one node while it exists;
+# the codec's own reconnect-grace park/reclaim cache is the
+# defense-in-depth for the other paths that can still call
+# codec->deinit()/init() in quick succession (a stray Pause, headset-side
+# reconnects, a WirePlumber restart).
+#
+# TRADE-OFF (same as before, now generic to whichever device
+# [device] address names): while this rule is active, that device's
+# bluez5 sink node is NEVER suspended while connected, even during long
+# silences -- the qemu-hexagon helper instance stays resident instead of
+# being released, a small constant CPU cost (`momentum4 doctor` and
+# `momentum4 stats` both surface this).
+monitor.bluez.rules = [
+  {
+    matches = [
+      { node.name = "~bluez_output\\.@M4_ADDRESS_UNDERSCORE@\\..*" }
+    ]
+    actions = {
+      update-props = {
+        session.suspend-timeout-seconds = 0
+      }
+    }
+  }
+]

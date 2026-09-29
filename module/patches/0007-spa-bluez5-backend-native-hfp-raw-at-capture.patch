@@ -1,0 +1,21 @@
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -1246,6 +1246,17 @@
+ 			return true;
+ 		}
+ 
++		/* momentum4 patch 0007
++		 * ("tap = mic"): diagnostic-only capture of every OTHER
++		 * unhandled AT command -- we do not yet know whether MOMENTUM 4's
++		 * touch-panel tap (as opposed to the physical button, which mutes
++		 * the mic entirely locally, no AT at all -- see
++		 * m4-hfp-events.h's doc comment) sends anything here, or what.
++		 * Does NOT change the reply (still ERROR below): unlike the four
++		 * named verbs above, we do not know this command well enough to
++		 * claim OK for it. */
++		m4_hfp_events_notify_raw(backend->log, buf, rfcomm->device ? rfcomm->device->address : NULL);
++
+ 		spa_log_warn(backend->log, "RFCOMM receive command but modem not available: %s", buf);
+ 		rfcomm_send_error(rfcomm, CMEE_NO_CONNECTION_TO_PHONE);
+ 		return true;

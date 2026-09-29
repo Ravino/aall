@@ -1,0 +1,22 @@
+# hfp_confirm_delay.scn -- HFP/A2DP profile confirmation arriving late
+# (the observed live delay window was 0-12s; scaled to
+# ms here so the real wall-clock wait pw/callfsm_graph_adapter.c's
+# set_profile_confirm() does stays well under a second -- see
+# scenario_runner.c's top comment). delay < confirm_timeout: succeeds
+# (arrives while the adapter is still polling). delay > confirm_timeout:
+# times out -- automode correctly reverts its optimistic call_active flip,
+# and the graph is correctly left on the OLD profile (the switch was
+# issued, never applied server-side in this model).
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0  present 1 1
+0.0  mode auto
+0.0  hfp_delay headset-head-unit 20
+0.0  mic signal-desktop start
+0.35 expect_set_profile_calls 1
+0.35 expect_profile headset-head-unit
+0.35 expect_call_active 1
+1.0  hfp_delay a2dp-sink 500
+1.0  mic signal-desktop stop
+3.6  expect_set_profile_calls 2
+3.6  expect_profile headset-head-unit
+3.6  expect_call_active 1

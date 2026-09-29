@@ -1,0 +1,22 @@
+diff --git a/spa/plugins/bluez5/meson.build b/spa/plugins/bluez5/meson.build
+--- a/spa/plugins/bluez5/meson.build
++++ b/spa/plugins/bluez5/meson.build
+@@ -111,11 +111,16 @@
+ endif
+ 
+ if aptx_dep.found()
++  # momentum4 (experimental, out-of-tree only): m4-adaptive-bridge.c
++  # adds the qemu-hexagon helper IPC used by the aptx_adaptive entry appended
++  # in a2dp-codec-aptx.c. Needs
++  # pthread (bridge IO thread) in addition to upstream's aptx_dep/sbc_dep.
+   bluez_codec_aptx = shared_library('spa-codec-bluez5-aptx',
+-    [ 'a2dp-codec-aptx.c', 'media-codecs.c' ],
++    [ 'a2dp-codec-aptx.c', 'media-codecs.c', 'm4-adaptive-bridge.c',
++      'm4-adaptive-heartbeat.c', 'm4-adaptive-config.c' ],
+     include_directories : [ configinc ],
+     c_args : codec_args,
+-    dependencies : [ spa_dep, aptx_dep, sbc_dep ],
++    dependencies : [ spa_dep, aptx_dep, sbc_dep, pthread_lib ],
+     install : true,
+     install_dir : spa_plugindir / 'bluez5')
+ endif

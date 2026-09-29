@@ -1,0 +1,55 @@
+# mic_on_enter_remember.scn -- mic-on-enter: `[call] mic-on-enter =
+# remember` -- restores the mic mute state from the moment of the LAST HFP
+# exit (core/state.h's m4_mic_state_write()/_read(), captured in daemon.c's
+# daemon_persist_mic_state_on_exit() BEFORE the unconditional force-unmute
+# that always follows it). No daemon restart in this scenario (see
+# mic_on_enter_remember_reboot.scn for the persisted-file survival case).
+CONFIG confirm_timeout_ms=200 use_repair=0 mic_on_enter=remember
+0.0 present 1 1
+0.0 mode manual
+0.0 expect_profile a2dp-sink
+
+# first-ever call: no prior record at all -- "on" is the safe default
+# (`[call] mic-on-enter`'s own doc comment: the same safe default as
+# the key itself).
+0.0 mic_route 1 0.0 1
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_mic_volume 1.0
+0.0 expect_mic_mute 0
+
+# user mutes mid-call with the physical button (an M4-reported AT+VGM
+# change, not a daemon write -- m4_graph_ops_fake_set_mic_route(), NOT a
+# `mic_ctl`/ctl.sock call).
+0.1 mic_route 1 0.0 0
+
+0.2 call off
+0.2 expect_response_ok
+0.2 expect_profile a2dp-sink
+0.2 expect_call_active 0
+# call-off's own unconditional force-unmute (unrelated existing behaviour):
+# the LIVE Route ends up unmuted -- but the PERSISTED record, captured
+# earlier in the very same call-off, must still say "muted".
+0.2 expect_mic_volume 1.0
+
+# second call: M4 reports full gain again (as force-unmute just left it) --
+# entry-fix must still restore "muted" from the persisted record.
+0.3 mic_route 1 1.0 0
+0.3 call on
+0.3 expect_response_ok
+0.3 expect_profile headset-head-unit
+0.3 expect_mic_volume 0.0
+0.3 expect_mic_mute 1
+
+# this time the user unmutes again before hanging up -- persisted record
+# updates back to "unmuted" on THIS exit, next entry-fix must restore that
+# instead (proves this is "last exit", not "ever seen muted, sticky").
+0.35 mic_route 1 1.0 0
+0.4 call off
+0.4 expect_response_ok
+0.5 mic_route 1 0.0 1
+0.5 call on
+0.5 expect_response_ok
+0.5 expect_mic_volume 1.0
+0.5 expect_mic_mute 0

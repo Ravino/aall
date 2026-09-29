@@ -1,0 +1,181 @@
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -42,6 +42,8 @@
+ #include "telephony.h"
+ #include "m4-hfp-events.h" /* momentum4 patch 0006 */
+ #include "m4-sco-restore.h" /* momentum4 patch 0008 */
++#include "m4-hfp-config.h" /* [hfp] momentum4.conf section resolver */
++#include "m4-device-policy.h" /* allow-devices/call-control/sco-restore device gate */
+ #include <stdlib.h>
+ #include <time.h>
+ 
+@@ -1222,21 +1224,37 @@
+ 		// This command is sent when we activate Apple extensions
+ 		rfcomm_send_reply(rfcomm, "OK");
+ 	} else if (!mm_is_available(backend->modemmanager)) {
+-		/* momentum4 patch 0006: MOMENTUM 4's
+-		 * own gesture->AT mapping (e.g. swipe back = "end call") lands here
+-		 * because this machine never registers a ModemManager. Upstream
+-		 * answers every such command with +CME ERROR and does nothing else,
+-		 * which gives us no way to react to the gesture. For exactly the
+-		 * four call-control commands the M4 is known (or expected) to send
+-		 * in this situation, answer OK instead (closer to the HFP spec:
+-		 * "no call to hang up/answer" is not an AG error) and fan the event
+-		 * out to momentum4d over a best-effort, non-blocking UNIX datagram
+-		 * socket -- m4_hfp_events_notify() never blocks this main loop
+-		 * thread, and silently drops the event if momentum4d or its socket
+-		 * is not there. Every other unhandled AT command keeps the
+-		 * original ERROR behaviour below. */
++		/* MOMENTUM 4's own gesture->AT mapping (e.g. swipe
++		 * back = "end call") lands here because this machine never
++		 * registers a ModemManager. Upstream answers every such command
++		 * with +CME ERROR and does nothing else, which gives us no way to
++		 * react to the gesture. For exactly the four call-control commands
++		 * a COMPATIBLE device is known (or expected) to send in this
++		 * situation, answer OK instead (closer to the HFP spec: "no call to
++		 * hang up/answer" is not an AG error) and fan the event out to
++		 * momentum4d over a best-effort, non-blocking UNIX datagram socket
++		 * -- m4_hfp_events_notify() never blocks this main loop thread, and
++		 * silently drops the event if momentum4d or its socket is not
++		 * there. [hfp] call-control (default "m4"/IDENTITY) gates this to
++		 * a device matching [device] name-match/address; "all"/ANY answers
++		 * OK for every HFP peer with no ModemManager; "off" never touches
++		 * the reply at all, same as upstream. Every other unhandled AT
++		 * command keeps the original ERROR behaviour below regardless. */
++		const struct m4_hfp_config *hfpcfg = m4_hfp_config_get();
++		const char *dev_name;
++		const char *dev_addr;
++		bool call_control_allowed;
+ 		const char *m4_verb = NULL;
+ 
++		m4_hfp_events_set_socket_path(hfpcfg->events_socket);
++		dev_name = rfcomm->device ?
++				(rfcomm->device->name ? rfcomm->device->name : rfcomm->device->alias) : NULL;
++		dev_addr = rfcomm->device ? rfcomm->device->address : NULL;
++		call_control_allowed = hfpcfg->call_control_mode != M4_DEVICE_POLICY_OFF &&
++				(hfpcfg->call_control_mode == M4_DEVICE_POLICY_ANY ||
++				 m4_device_policy_identity_matches(dev_name, dev_addr,
++						 hfpcfg->name_match, hfpcfg->device_address));
++
+ 		if (spa_strstartswith(buf, "AT+CHUP"))
+ 			m4_verb = "CHUP";
+ 		else if (spa_strstartswith(buf, "ATA"))
+@@ -1246,24 +1264,22 @@
+ 		else if (spa_strstartswith(buf, "AT+BVRA"))
+ 			m4_verb = "BVRA";
+ 
+-		if (m4_verb != NULL) {
++		if (m4_verb != NULL && call_control_allowed) {
+ 			spa_log_info(backend->log, "momentum4: HF call control without modem, answering OK: %s", buf);
+-			m4_hfp_events_notify(backend->log, m4_verb,
+-					rfcomm->device ? rfcomm->device->address : NULL);
++			m4_hfp_events_notify(backend->log, m4_verb, dev_addr);
+ 			rfcomm_send_reply(rfcomm, "OK");
+ 			return true;
+ 		}
+ 
+ 		/* momentum4 patch 0007
+-		 * ("tap = mic"): diagnostic-only capture of every OTHER
+-		 * unhandled AT command -- we do not yet know whether MOMENTUM 4's
+-		 * touch-panel tap (as opposed to the physical button, which mutes
+-		 * the mic entirely locally, no AT at all -- see
+-		 * m4-hfp-events.h's doc comment) sends anything here, or what.
+-		 * Does NOT change the reply (still ERROR below): unlike the four
+-		 * named verbs above, we do not know this command well enough to
+-		 * claim OK for it. */
+-		m4_hfp_events_notify_raw(backend->log, buf, rfcomm->device ? rfcomm->device->address : NULL);
++		 * ("tap = mic"): diagnostic-only capture of every OTHER
++		 * unhandled AT command -- gated on [hfp] raw-at-capture (default
++		 * off; the old behaviour was unconditionally always-on).
++		 * Does NOT change the reply (still ERROR below):
++		 * unlike the four named verbs above, we do not know this command's
++		 * semantics well enough to claim OK for it. */
++		if (hfpcfg->raw_at_capture)
++			m4_hfp_events_notify_raw(backend->log, buf, dev_addr, hfpcfg->raw_min_interval_ms);
+ 
+ 		spa_log_warn(backend->log, "RFCOMM receive command but modem not available: %s", buf);
+ 		rfcomm_send_error(rfcomm, CMEE_NO_CONNECTION_TO_PHONE);
+@@ -2931,11 +2947,6 @@
+ 	return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+ }
+ 
+-static enum m4_sco_restore_mode m4_sco_restore_mode_now(void)
+-{
+-	return m4_sco_restore_mode_parse(getenv(M4_SCO_RESTORE_ENV));
+-}
+-
+ static const char *m4_dev_name(struct spa_bt_transport *t)
+ {
+ 	if (t->device == NULL)
+@@ -3100,8 +3111,11 @@
+ 	t->fd = sock;
+ 	td->requesting = true;
+ 	td->m4_restoring = true;
+-	/* connect watchdog, see m4_sco_restore_timer_event() */
+-	if (m4_sco_restore_timer_start(t, M4_SCO_RESTORE_CONNECT_TIMEOUT_MS) < 0)
++	/* connect watchdog, see m4_sco_restore_timer_event() -- [hfp]
++	 * sco-restore-connect-timeout-ms, already resolved into
++	 * td->m4_restore.timing by m4_sco_restore_on_hup() before the episode
++	 * that led here was even scheduled. */
++	if (m4_sco_restore_timer_start(t, td->m4_restore.timing.connect_timeout_ms) < 0)
+ 		spa_log_warn(backend->log, "momentum4: transport %p: no connect watchdog", t);
+ 	sco_start_source(t);
+ 	if (td->err != -EINPROGRESS)
+@@ -3153,12 +3167,26 @@
+ {
+ 	struct impl *backend = SPA_CONTAINER_OF(t->backend, struct impl, this);
+ 	struct transport_data *td = t->user_data;
+-	enum m4_sco_restore_mode mode = m4_sco_restore_mode_now();
++	const struct m4_hfp_config *hfpcfg = m4_hfp_config_get();
+ 	enum m4_sco_restore_verdict v;
++	bool target;
+ 	int delay_ms = 0;
+ 	char why[96];
+ 
+-	if (!m4_sco_restore_device_is_target(mode, m4_dev_name(t)))
++	m4_hfp_events_set_socket_path(hfpcfg->events_socket);
++
++	/* [hfp] sco-restore replaces the old
++	 * M4_HFP_SCO_RESTORE environment variable -- OFF never restores nor
++	 * notifies momentum4d at all (upstream behaviour, unchanged from the
++	 * pre-0008 codec); ANY ("all") treats every HFP peer as a target;
++	 * IDENTITY (default "m4") only a device matching [device]
++	 * name-match/address. */
++	if (hfpcfg->sco_restore_mode == M4_DEVICE_POLICY_OFF)
++		return;
++	target = hfpcfg->sco_restore_mode == M4_DEVICE_POLICY_ANY ||
++			m4_device_policy_identity_matches(m4_dev_name(t), m4_dev_addr(t),
++					hfpcfg->name_match, hfpcfg->device_address);
++	if (!target)
+ 		return;
+ 	if (!t->acquired || t->acquire_refcount <= 0)
+ 		return; /* nobody is using it: not an audio loss */
+@@ -3169,18 +3197,21 @@
+ 			t, why, t->acquire_refcount);
+ 	m4_hfp_events_notify(backend->log, "SCODROP", m4_dev_addr(t));
+ 
+-	if (mode == M4_SCO_RESTORE_MODE_OFF) {
+-		/* terminal event right away, so momentum4d can fall back */
+-		m4_sco_restore_give_up(t, "disabled by " M4_SCO_RESTORE_ENV);
+-		return;
+-	}
+ 	if (!m4_sco_restore_wanted(t))
+ 		return;
+ 
++	/* Apply the LATEST [hfp] sco-restore-* timings before this episode --
++	 * m4_sco_restore_set_timing() only updates td->m4_restore.timing in
++	 * place, it does not reset n_episodes/active/retries_left (see its own
++	 * doc comment), so a config change takes effect on the very next
++	 * episode without losing rate-limiting history across episodes. */
++	m4_sco_restore_set_timing(&td->m4_restore, &hfpcfg->sco_timing);
++
+ 	v = m4_sco_restore_on_drop(&td->m4_restore, m4_now_ms(), &delay_ms);
+ 	if (v == M4_SCO_RESTORE_GIVE_UP)
+ 		snprintf(why, sizeof(why), "more than %d restores in %d s",
+-				M4_SCO_RESTORE_MAX_EPISODES, M4_SCO_RESTORE_WINDOW_MS / 1000);
++				td->m4_restore.timing.max_episodes,
++				td->m4_restore.timing.window_ms / 1000);
+ 	m4_sco_restore_schedule_or_give_up(t, v, delay_ms, why);
+ }
+ 

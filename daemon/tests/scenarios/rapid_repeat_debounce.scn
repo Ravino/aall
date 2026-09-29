@@ -1,0 +1,36 @@
+# rapid_repeat_debounce.scn -- pw-record-style rapid, repeated brief
+# captures below the debounce window (must NOT switch profile), then enough
+# full on/off cycles to trip the flapping-freeze safety net (max_switches=6
+# in rate_window_s=300, core/automode.c defaults) -- after which further
+# mic edges must NOT touch the graph at all until `momentum4 resume`
+# (untested here -- see safe_latch.scn / test_automode.c for resume()).
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0  present 1 1
+0.0  mode auto
+0.0  mic pw-record start
+0.05 mic pw-record stop
+0.10 mic pw-record start
+0.15 mic pw-record stop
+0.20 mic pw-record start
+0.25 expect_set_profile_calls 0
+0.55 expect_set_profile_calls 1
+0.55 expect_profile headset-head-unit
+0.6  call on
+0.6  expect_response_ok
+0.6  expect_set_profile_calls 1
+0.65 call on
+0.65 expect_set_profile_calls 1
+0.7  mic pw-record stop
+3.25 expect_set_profile_calls 2
+3.25 expect_call_active 0
+3.3  mic pw-record start
+3.65 expect_set_profile_calls 3
+3.7  mic pw-record stop
+6.25 expect_set_profile_calls 4
+6.3  mic pw-record start
+6.65 expect_set_profile_calls 5
+6.7  mic pw-record stop
+9.25 expect_set_profile_calls 6
+9.3  mic pw-record start
+9.65 expect_set_profile_calls 6
+9.65 expect_frozen 1

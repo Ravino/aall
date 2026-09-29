@@ -1,0 +1,23 @@
+# hfp_sco_drop_fallback.scn -- patch 0008: the restore
+# failed (M4 refused the link twice, or too many drops in 30 s, or restore
+# disabled with M4_HFP_SCO_RESTORE=0) -> SCOFAIL -> the daemon falls back to
+# A2DP (aptX Adaptive), so sound comes back instead of staying dead.
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0 present 1 1
+0.0 mode manual
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+
+5.0 hfp SCODROP
+5.0 expect_profile headset-head-unit
+8.3 hfp SCOFAIL
+8.3 expect_profile a2dp-sink
+8.3 expect_call_active 0
+8.3 expect_set_profile_calls 2
+
+# a stray late SCOUP after the switch changes nothing
+8.5 hfp SCOUP
+8.5 expect_profile a2dp-sink
+8.5 expect_set_profile_calls 2

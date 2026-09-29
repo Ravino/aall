@@ -1,0 +1,18 @@
+# a2dp_missing_after_hfp.scn -- a2dp-sink disappears from EnumProfile while
+# in HFP, exercised via
+# the AUTOMATIC repair path inside core/callfsm.c's m4_callfsm_off()
+# (confirm_or_repair()) -- no explicit `momentum4 repair-a2dp` needed.
+CONFIG confirm_timeout_ms=100 repair_connect_timeout_ms=50 repair_enum_wait_ms=200 use_repair=1
+0.0  present 1 1
+0.0  mode auto
+0.0  mic signal-desktop start
+0.35 expect_profile headset-head-unit
+0.35 expect_set_profile_calls 1
+0.4  remove_profile a2dp-sink
+0.4  bt_result 0 ok
+0.4  reappear_profile a2dp-sink 30
+0.4  mic signal-desktop stop
+2.95 expect_repair_calls 1
+2.95 expect_profile a2dp-sink
+2.95 expect_call_active 0
+2.95 expect_set_profile_calls 3

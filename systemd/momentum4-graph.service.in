@@ -1,0 +1,43 @@
+# momentum4-graph.service.in -- "graph-host": a single long-lived process
+# (`momentum4 graph-host`) that loads libpipewire-module-combine-stream +
+# module-loopback into its OWN pw_context (the same technique pw-loopback
+# uses) and applies clock.force-quantum, instead of separate
+# `pactl load-module` one-shots living inside pipewire-pulse's process.
+#
+# CLI contract this unit assumes: a foreground process that (re-)builds
+# the [graph] nodes on start and tears them down cleanly on SIGTERM,
+# reading its configuration from momentum4.conf's [graph] section
+# (mic-placeholder, mic-name, combine, combine-name, combine-members,
+# combine-latency-compensate, force-quantum) -- no command-line flags of
+# its own.
+#
+# The bindir below is substituted at build time (see ../meson.build).
+
+[Unit]
+Description=momentum4: audio graph (combined output, mic placeholder, quantum) -- see `momentum4 config show [graph]`
+# module-combine-sink/module-loopback (in the old pactl-based implementation)
+# lived INSIDE pipewire-pulse -- graph-host, like pw-loopback, uses its
+# own separate pw_context on top of plain pipewire.service, so it depends
+# on pipewire.service, not pipewire-pulse.service.
+PartOf=pipewire.service
+After=pipewire.service
+StartLimitIntervalSec=120
+StartLimitBurst=20
+
+[Service]
+Type=simple
+ExecStart=@bindir@/momentum4 graph-host
+# The nodes (m4_combined, momentum4_mic) disappear during a restart --
+# RestartSec=1 keeps that window short (a few seconds) without a busy-loop
+# on a persistent failure.
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=%t/momentum4
+RuntimeDirectory=momentum4
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=default.target

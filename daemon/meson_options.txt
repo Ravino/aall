@@ -1,0 +1,6 @@
+option('tests', type : 'boolean', value : true,
+  description : 'build the unit test binaries (tests/)')
+option('dev_build', type : 'boolean', value : true,
+  description : 'bake this checkout own data/sounds path in as util/earcon.c last-resort ' +
+                'fallback ; disable for a real release/packaging ' +
+                'build, which must never embed a checkout-local path')

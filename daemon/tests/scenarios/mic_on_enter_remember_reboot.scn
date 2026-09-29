@@ -1,0 +1,39 @@
+# mic_on_enter_remember_reboot.scn -- mic-on-enter: `[call]
+# mic-on-enter = remember` survives not just a daemon restart but a full
+# REBOOT (stored in $XDG_RUNTIME_DIR/momentum4 and in
+# ~/.local/state/momentum4, to survive a daemon restart):
+# $XDG_RUNTIME_DIR is typically tmpfs and does NOT survive a reboot --
+# `mic_wipe_runtime` (this DSL's own model of that) removes the runtime_dir
+# copy right before `restart`, leaving ONLY the `[paths] state-dir` copy,
+# which this harness keeps in a SEPARATE tmpdir (fx.state_dir) precisely so
+# this distinction is testable. See mic_on_enter_remember.scn for the
+# simpler same-process case.
+CONFIG confirm_timeout_ms=200 use_repair=0 mic_on_enter=remember
+0.0 present 1 1
+0.0 mode manual
+
+# call, mute mid-call, hang up -- persisted record (BOTH copies) = muted.
+0.0 mic_route 1 1.0 0
+0.0 call on
+0.0 expect_response_ok
+0.1 mic_route 1 0.0 0
+0.2 call off
+0.2 expect_response_ok
+0.2 expect_profile a2dp-sink
+
+# "reboot": wipe the runtime_dir copy, then restart the daemon (a real
+# reboot would also clear call-state/mode/safe-latch the same way -- this
+# scenario only wipes the ONE file relevant to mic-on-enter, see
+# mic_wipe_runtime's own comment in scenario_runner.c).
+0.3 mic_wipe_runtime
+0.3 restart
+0.3 expect_mode manual
+
+# next call-on, after the "reboot": entry-fix must still restore "muted",
+# proving it fell back to state_dir (the ONLY copy left).
+0.4 mic_route 1 1.0 0
+0.4 call on
+0.4 expect_response_ok
+0.4 expect_profile headset-head-unit
+0.4 expect_mic_volume 0.0
+0.4 expect_mic_mute 1

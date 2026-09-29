@@ -1,0 +1,32 @@
+# mic_volume_after_reconnect.scn -- Bug 2 :
+# M4's own reported HFP mic gain (AT+VGM) comes back as 0% right after a
+# (re)connect / profile switch into headset-head-unit -- bluez5-device.c
+# mirrors whatever the headset itself reports verbatim as the M4 Device's
+# SPA_PARAM_Route (index=ROUTE_INPUT/device=DEVICE_ID_SOURCE) channelVolumes,
+# with SPA_POD_PROP_FLAG_HARDWARE set, so nothing in WirePlumber's usual
+# stream-restore overrides it. core/callfsm.c's m4_callfsm_on() now calls
+# ops->fix_mic_volume_if_needed() right after a confirmed mSBC/CVSD switch:
+# `mic_route 1 0.0 0` below seeds "M4's mic Route is already observed, at
+# 0%, not muted" (the exact reported symptom: "Mute: no, Volume 0%") BEFORE
+# the call is triggered, exactly like a real reconnect would have it in
+# place by the time codec_switched() confirms.
+CONFIG confirm_timeout_ms=200 use_repair=0
+0.0  present 1 1
+0.0  mode auto
+0.0  mic_route 1 0.0 0
+0.0  mic signal-desktop start
+0.35 expect_set_profile_calls 1
+0.35 expect_profile headset-head-unit
+0.35 expect_call_active 1
+0.35 expect_set_mic_volume_calls 1
+0.35 expect_mic_volume 1.0
+0.35 expect_mic_mute 0
+1.0  mic signal-desktop stop
+3.6  expect_call_active 0
+3.6  expect_profile a2dp-sink
+# A second HFP entry (idempotent re-check, not a second bug): mic route is
+# already fine (1.0/unmuted) from the fix above -- no further
+# set_mic_volume() call should be issued.
+4.0  mic signal-desktop start
+4.35 expect_call_active 1
+4.35 expect_set_mic_volume_calls 1

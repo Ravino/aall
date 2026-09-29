@@ -1,0 +1,43 @@
+diff --git a/spa/include/spa/param/bluetooth/audio.h b/spa/include/spa/param/bluetooth/audio.h
+--- a/spa/include/spa/param/bluetooth/audio.h
++++ b/spa/include/spa/param/bluetooth/audio.h
+@@ -37,6 +37,15 @@
+ 	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_PRO,
+ 	SPA_BLUETOOTH_AUDIO_CODEC_OPUS_G,
+ 
++	/* momentum4: experimental,
++	 * out-of-tree only. NOT an upstream-assigned id -- do not rely on this
++	 * numeric value outside this private build; it is intentionally placed
++	 * after every upstream A2DP entry so codec_order() in codec-loader.c
++	 * falls through to its default
++	 * "unknown id" case and gives aptx_adaptive the lowest codec-switch
++	 * priority, below aptX HD. */
++	SPA_BLUETOOTH_AUDIO_CODEC_APTX_ADAPTIVE_M4_EXPERIMENTAL,
++
+ 	/* HFP */
+ 	SPA_BLUETOOTH_AUDIO_CODEC_CVSD = 0x100,
+ 	SPA_BLUETOOTH_AUDIO_CODEC_MSBC,
+diff --git a/spa/plugins/bluez5/a2dp-codec-aptx.c b/spa/plugins/bluez5/a2dp-codec-aptx.c
+--- a/spa/plugins/bluez5/a2dp-codec-aptx.c
++++ b/spa/plugins/bluez5/a2dp-codec-aptx.c
+@@ -411,7 +411,7 @@
+ 		return -EINVAL;
+ 
+ 	this->frame_count += *dst_out / this->frame_length;
+-	*need_flush = (this->frame_count >= this->max_frames) ? NEED_FLUSH_ALL : NEED_FLUSH_NO;
++	*need_flush = (this->frame_count >= this->max_frames) ? NEED_FLUSH_ALL: NEED_FLUSH_NO;
+ 	return res;
+ }
+ 
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -1522,7 +1522,7 @@
+ 	if (res && spa_strstartswith(reply, "OK")) {
+ 		struct spa_bt_telephony_call *call;
+ 		call = hfp_hf_add_call(rfcomm, rfcomm->telephony_ag, CALL_STATE_DIALING, number);
+-		*err = call ? BT_TELEPHONY_ERROR_NONE : BT_TELEPHONY_ERROR_FAILED;
++		*err = call ? BT_TELEPHONY_ERROR_NONE: BT_TELEPHONY_ERROR_FAILED;
+ 	} else {
+ 		spa_log_info(backend->log, "Failed to dial: \"%s\"", number);
+ 		if (res)

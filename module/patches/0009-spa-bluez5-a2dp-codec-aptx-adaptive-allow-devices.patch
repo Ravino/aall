@@ -1,0 +1,232 @@
+diff --git a/spa/plugins/bluez5/a2dp-codec-aptx.c b/spa/plugins/bluez5/a2dp-codec-aptx.c
+--- a/spa/plugins/bluez5/a2dp-codec-aptx.c
++++ b/spa/plugins/bluez5/a2dp-codec-aptx.c
+@@ -1288,6 +1288,122 @@
+ 	return sizeof(c);
+ }
+ 
++/* "allow-devices filter for the aptx_adaptive codec, default m4":
++ * MOMENTUM 4's own aptX Adaptive capability fingerprint. fill_caps() has no
++ * per-device context at all (bluez5-dbus.c registers the MediaEndpoint1
++ * globally, once per codec, before any device connects -- see
++ * codec_fill_caps_adaptive()'s own comment), and neither does one of the two
++ * negotiation entry points into select_config() (endpoint_select_
++ * configuration()'s own FIXME in bluez5-dbus.c: "We can't determine which
++ * device the SelectConfiguration() call is associated with"). So the only
++ * ABI-native way (i.e. with NO change to bluez5-dbus.c/bluez5-device.c core)
++ * to tell MOMENTUM 4 apart from some other aptX Adaptive receiver is by the
++ * CONTENT of the vendor capability bytes the peer itself advertises.
++ *
++ * The generic checks already below this comment (vendor_id, codec_id, the
++ * 48 kHz bit, the JOINT bit) only prove a peer speaks vendor 0x000000D7/
++ * codec 0x00AD-with-JOINT-at-48kHz -- NOT that it is specifically MOMENTUM 4.
++ * Byte 6 (sample_rate_source_type)'s low 3 bits and byte 7 (channel_mode)
++ * are deliberately EXCLUDED from the fingerprint below: those are the bits
++ * that legitimately differ between "what a peer advertises it is able to
++ * do" (a real remote SEP's capabilities, e.g. M4's own sep8:
++ * byte6=0x11/byte7=0x0A.1) and "what this file
++ * itself always sends back" (this codec's fixed NQ2Q/JOINT output,
++ * byte6=0x13/byte7=0x08) -- see the big comment above
++ * APTX_ADAPTIVE_SOURCE_TYPE_NQ2Q for why NQ2Q must always be OUR choice, not
++ * an echo of the peer's.
++ *
++ * Everything from ttp_ll_0 onward (struct offsets 8..39), however, is
++ * confirmed byte-for-byte identical between M4's real advertised sep8
++ * capabilities (TTP 37 6A C8 7D 64 7D, reserved_15th_byte 00,
++ * cap_ext_ver_num 01, features 0F000002 LE, setup_pref 02 03 03 03, eoc
++ * 00 AA, 14 reserved zero bytes) and this file's own fixed fill_caps()/
++ * select_config() output -- M4 is the ONLY aptX Adaptive
++ * receiver this project has ever captured real capability bytes from, so
++ * this is a genuine per-model fingerprint, not something mandated by the
++ * CAF/AVDTP spec. speculative, flagged for the maintainer/bt-kernel-
++ * engineer: whether every OTHER aptX Adaptive receiver on the market uses
++ * DIFFERENT bytes here (different TTP targets, features, or setup_pref) is
++ * assumed but not verified against a second real device -- if some other
++ * receiver happens to reuse the exact same Qualcomm reference-design
++ * defaults, this fingerprint alone would not distinguish it from MOMENTUM 4.
++ * True per-device (MAC address) filtering is possible only by patching
++ * bluez5-dbus.c to thread `struct spa_bt_device *`/its address through the
++ * media_codec vtable (endpoint_set_configuration() already has
++ * transport->device->address in scope, see its own comment) -- deliberately
++ * NOT done here: that would change struct media_codec's ABI for every
++ * codec in the plugin (sbc, aac, aptx, aptx-hd, ldac, opus, ...), a much
++ * larger blast radius than this project's own private codec needs. */
++static bool adaptive_caps_match_m4_fingerprint(const a2dp_aptx_adaptive_t *c)
++{
++	static const a2dp_aptx_adaptive_t m4 = {
++		.ttp_ll_0 = APTX_ADAPTIVE_TTP_LL_0,
++		.ttp_ll_1 = APTX_ADAPTIVE_TTP_LL_1,
++		.ttp_hq_0 = APTX_ADAPTIVE_TTP_HQ_0,
++		.ttp_hq_1 = APTX_ADAPTIVE_TTP_HQ_1,
++		.ttp_tws_0 = APTX_ADAPTIVE_TTP_TWS_0,
++		.ttp_tws_1 = APTX_ADAPTIVE_TTP_TWS_1,
++		.reserved_15th_byte = 0x00u,
++		.cap_ext_ver_num = APTX_ADAPTIVE_CAP_EXT_VER,
++		.features = APTX_ADAPTIVE_FEATURES_M4,
++		.first_setup_pref = APTX_ADAPTIVE_SETUP_PREF_1,
++		.second_setup_pref = APTX_ADAPTIVE_SETUP_PREF_2,
++		.third_setup_pref = APTX_ADAPTIVE_SETUP_PREF_3,
++		.fourth_setup_pref = APTX_ADAPTIVE_SETUP_PREF_4,
++		.eoc0 = APTX_ADAPTIVE_EOC0,
++		.eoc1 = APTX_ADAPTIVE_EOC1,
++		/* .reserved left zero-initialized, matching the 14 trailing zero
++		 * bytes confirmed live for M4's real sep8. */
++	};
++
++	return c->ttp_ll_0 == m4.ttp_ll_0 && c->ttp_ll_1 == m4.ttp_ll_1 &&
++		c->ttp_hq_0 == m4.ttp_hq_0 && c->ttp_hq_1 == m4.ttp_hq_1 &&
++		c->ttp_tws_0 == m4.ttp_tws_0 && c->ttp_tws_1 == m4.ttp_tws_1 &&
++		c->reserved_15th_byte == m4.reserved_15th_byte &&
++		c->cap_ext_ver_num == m4.cap_ext_ver_num &&
++		c->features == m4.features &&
++		c->first_setup_pref == m4.first_setup_pref &&
++		c->second_setup_pref == m4.second_setup_pref &&
++		c->third_setup_pref == m4.third_setup_pref &&
++		c->fourth_setup_pref == m4.fourth_setup_pref &&
++		c->eoc0 == m4.eoc0 && c->eoc1 == m4.eoc1 &&
++		memcmp(c->reserved, m4.reserved, sizeof(m4.reserved)) == 0;
++}
++
++/* Resolves the effective allow-devices policy with the SAME layered
++ * precedence (hardcoded default "m4" < ~/.config/momentum4/
++ * aptx-adaptive.conf's `allow-devices` key < M4_ADAPTIVE_ALLOW_DEVICES
++ * environment variable) as every other setting in this file -- mirrors
++ * adaptive_resolve_helper_paths() above. Returns true only for the
++ * explicit "any" opt-out. */
++static bool adaptive_resolve_allow_devices_any(void)
++{
++	struct m4_ah_user_config ucfg;
++	char config_path[M4_AH_CONFIG_PATH_MAX];
++	const char *env;
++	bool any = false; /* safe default: m4 only */
++
++	m4_ah_user_config_defaults(&ucfg);
++	m4_ah_user_config_default_path(config_path, sizeof(config_path));
++	m4_ah_user_config_load_file(&ucfg, config_path);
++
++	if (ucfg.have_allow_devices)
++		any = ucfg.allow_devices_any;
++
++	env = getenv("M4_ADAPTIVE_ALLOW_DEVICES");
++	if (env && *env) {
++		if (!strcasecmp(env, "any"))
++			any = true;
++		else if (!strcasecmp(env, "m4"))
++			any = false;
++		else if (aptx_adaptive_log)
++			spa_log_warn(aptx_adaptive_log,
++					"aptx_adaptive: ignoring unknown M4_ADAPTIVE_ALLOW_DEVICES=%s "
++					"(expected m4 or any)", env);
++	}
++	return any;
++}
++
+ /*
+  * No real two-way negotiation: MOMENTUM 4 only ever offers 48 kHz/STEREO on
+  * this vendor/codec id, so we just check the remote
+@@ -1324,6 +1440,23 @@
+ 	if (info && info->rate != 0 && info->rate != 48000)
+ 		return -ENOTSUP;
+ 
++	/* allow-devices=m4 (default) -- see adaptive_caps_match_m4_fingerprint()'s
++	 * own comment for exactly which bytes and why. Without this check, ANY
++	 * peer offering vendor 0x000000D7/codec 0x00AD at 48 kHz/JOINT would be
++	 * accepted, not just MOMENTUM 4. */
++	if (!adaptive_resolve_allow_devices_any() &&
++			!adaptive_caps_match_m4_fingerprint(&remote)) {
++		if (aptx_adaptive_log)
++			spa_log_info(aptx_adaptive_log,
++					"aptx_adaptive: remote capabilities do not match the MOMENTUM 4 "
++					"fingerprint (allow-devices=m4, the default) -- refusing to "
++					"negotiate aptx_adaptive with this peer, falling back to the "
++					"next codec in priority order (aptX HD); set allow-devices=any "
++					"in ~/.config/momentum4/aptx-adaptive.conf or "
++					"M4_ADAPTIVE_ALLOW_DEVICES=any to opt out");
++		return -ENOTSUP;
++	}
++
+ 	spa_zero(out);
+ 	out.vendor_id = APTX_ADAPTIVE_VENDOR_ID;
+ 	out.codec_id = APTX_ADAPTIVE_CODEC_ID;
+@@ -2203,6 +2336,64 @@
+ 	return (int)M4_AH_PCM_BLOCK_BYTES;
+ }
+ 
++/* Defense-in-depth. Without a validate_config callback, BlueZ (see
++ * endpoint_set_configuration() in bluez5-dbus.c) accepts WHATEVER
++ * Configuration bytes a peer sends directly to our local aptx_adaptive
++ * MediaEndpoint1.SetConfiguration() D-Bus call -- a path that does NOT go
++ * through codec_select_config_adaptive() at all (that only covers the two
++ * PipeWire/BlueZ-initiated SelectConfiguration() call sites, see the
++ * "FIXME: We can't determine which device..." comment referenced above).
++ * Wiring this callback in closes that second entry point: the same vendor/
++ * codec/rate/channel-mode checks as select_config(), plus the same
++ * allow-devices=m4 fingerprint check (adaptive_caps_match_m4_fingerprint()).
++ *
++ * On a config that would have passed before (any vendor 0x000000D7/codec
++ * 0x00AD/48kHz/JOINT config from MOMENTUM 4 itself), this is a pure
++ * ADDITION of checks -- `info` is filled out exactly the way BlueZ's own
++ * built-in "no validate_config" fallback already did (2 channels, FL/FR --
++ * see the comment this replaces on the .validate_config vtable slot below
++ * and msbc_validate_config() above for the same pattern used by another
++ * codec in this same file), so this is not a behaviour change for MOMENTUM 4
++ * itself, only a new rejection path for anyone/anything else. */
++static int codec_validate_config_adaptive(const struct media_codec *codec, uint32_t flags,
++		const void *caps, size_t caps_size, struct spa_audio_info *info)
++{
++	a2dp_aptx_adaptive_t remote;
++
++	if (caps_size < sizeof(remote))
++		return -EINVAL;
++
++	memcpy(&remote, caps, sizeof(remote));
++
++	if (remote.vendor_id != APTX_ADAPTIVE_VENDOR_ID ||
++			remote.codec_id != APTX_ADAPTIVE_CODEC_ID)
++		return -ENOTSUP;
++	if (!(remote.sample_rate_source_type & APTX_ADAPTIVE_SAMPLERATE_48000))
++		return -ENOTSUP;
++	if (!(remote.channel_mode & APTX_ADAPTIVE_CHANNELS_JOINT))
++		return -ENOTSUP;
++
++	if (!adaptive_resolve_allow_devices_any() &&
++			!adaptive_caps_match_m4_fingerprint(&remote)) {
++		if (aptx_adaptive_log)
++			spa_log_warn(aptx_adaptive_log,
++					"aptx_adaptive: rejecting SetConfiguration() -- capabilities "
++					"do not match the MOMENTUM 4 fingerprint (allow-devices=m4, "
++					"the default)");
++		return -EINVAL;
++	}
++
++	spa_zero(*info);
++	info->media_type = SPA_MEDIA_TYPE_audio;
++	info->media_subtype = SPA_MEDIA_SUBTYPE_raw;
++	info->info.raw.format = SPA_AUDIO_FORMAT_S16_LE;
++	info->info.raw.channels = 2;
++	info->info.raw.position[0] = SPA_AUDIO_CHANNEL_FL;
++	info->info.raw.position[1] = SPA_AUDIO_CHANNEL_FR;
++	info->info.raw.rate = 48000;
++	return 0;
++}
++
+ static void codec_get_delay_adaptive(void *data, uint32_t *encoder, uint32_t *decoder)
+ {
+ 	/* speculative/approximate: the DSP's own algorithmic delay is under one
+@@ -2235,9 +2426,13 @@
+ 	.fill_caps = codec_fill_caps_adaptive,
+ 	.select_config = codec_select_config_adaptive,
+ 	.enum_config = codec_enum_config_adaptive,
+-	/* .validate_config intentionally NULL: the bluez5-dbus.c fallback for
+-	 * "no validate_config" is exactly 2 channels FL/FR (see
+-	 * bluez5-dbus.c's own fallback logic), which is what we want. */
++	/* Was intentionally NULL (the bluez5-dbus.c fallback for "no
++	 * validate_config" is exactly 2 channels FL/FR, which
++	 * is what codec_validate_config_adaptive() below still produces on
++	 * success) -- now wired in as the allow-devices=m4 enforcement point for
++	 * the SetConfiguration() D-Bus call path that bypasses select_config()
++	 * entirely, see that function's own comment. */
++	.validate_config = codec_validate_config_adaptive,
+ 	.init = codec_init_adaptive,
+ 	.deinit = codec_deinit_adaptive,
+ 	.get_block_size = codec_get_block_size_adaptive,

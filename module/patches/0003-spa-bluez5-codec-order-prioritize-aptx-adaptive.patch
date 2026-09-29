@@ -1,0 +1,33 @@
+diff --git a/spa/plugins/bluez5/codec-loader.c b/spa/plugins/bluez5/codec-loader.c
+--- a/spa/plugins/bluez5/codec-loader.c
++++ b/spa/plugins/bluez5/codec-loader.c
+@@ -30,7 +30,29 @@
+ 
+ static int codec_order(const struct media_codec *c)
+ {
++	/* momentum4: puts aptx_adaptive first in codec priority for MOMENTUM 4.
++	 * `bluez5.codecs` (the WirePlumber/BlueZ monitor property, see
++	 * bluez5-dbus.c get_codecs()/parse_codecs()) is ONLY an enable/disable
++	 * allow-list -- spa_dict_qsort() there sorts it alphabetically for
++	 * lookup, the array's ORDER in that property has NO effect on codec
++	 * priority. The only thing that determines priority is THIS function's
++	 * static table (used by codec_order_cmp() -> qsort() in
++	 * load_media_codecs() below): lower index here = tried first. Before
++	 * this patch, our codec's id
++	 * (SPA_BLUETOOTH_AUDIO_CODEC_APTX_ADAPTIVE_M4_EXPERIMENTAL, not in the
++	 * upstream table) fell through to `return SPA_N_ELEMENTS(order)`, i.e.
++	 * the LOWEST priority of everything, including SBC. Placing it FIRST
++	 * here is safe process-wide, not just for MOMENTUM 4: for every other
++	 * Bluetooth device this codec's own select_config()/init() simply
++	 * reject the connection (wrong vendor id) or fail closed if the
++	 * qemu-hexagon helper is unavailable, so BlueZ/PipeWire move on to the
++	 * next codec in this same list -- SBC etc. are completely unaffected
++	 * for any device that is not MOMENTUM 4 on this exact vendor/codec id.
++	 * No `bluez5.codecs` WirePlumber config change is required for this
++	 * ordering to take effect (it is a priority table, not an
++	 * allow-list). */
+ 	static const enum spa_bluetooth_audio_codec order[] = {
++		SPA_BLUETOOTH_AUDIO_CODEC_APTX_ADAPTIVE_M4_EXPERIMENTAL,
+ 		SPA_BLUETOOTH_AUDIO_CODEC_LC3,
+ 		SPA_BLUETOOTH_AUDIO_CODEC_LDAC,
+ 		SPA_BLUETOOTH_AUDIO_CODEC_APTX_HD,

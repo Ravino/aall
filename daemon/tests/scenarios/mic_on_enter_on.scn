@@ -1,0 +1,34 @@
+# mic_on_enter_on.scn -- mic-on-enter: `[call] mic-on-enter = on`
+# -- entry-fix always
+# unmutes the M4 mic, regardless of what it reported right before the call,
+# and there is never a mic-off earcon chained after call-on.
+CONFIG confirm_timeout_ms=200 use_repair=0 mic_on_enter=on
+0.0 present 1 1
+0.0 mode manual
+0.0 expect_profile a2dp-sink
+
+# M4 reports mic muted (e.g. left muted from a previous call, or a stale
+# AT+VGM) BEFORE the call starts -- entry-fix must still force it on.
+0.0 mic_route 1 0.0 1
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+0.0 expect_mic_volume 1.0
+0.0 expect_mic_mute 0
+0.0 expect_set_mic_volume_calls 1
+
+0.1 call off
+0.1 expect_response_ok
+0.1 expect_profile a2dp-sink
+0.1 expect_call_active 0
+
+# second call: M4 already reports full gain -- entry-fix has nothing to fix,
+# no extra write. Calls so far: 1 (entry-fix @0.0) + 1 (call-off's own
+# unconditional force-unmute @0.1, ALWAYS issued -- daemon_force_mic_unmute()'s
+# own doc comment) = 2; this call-on's entry-fix adds no third call.
+0.2 mic_route 1 1.0 0
+0.2 call on
+0.2 expect_response_ok
+0.2 expect_mic_volume 1.0
+0.2 expect_set_mic_volume_calls 2

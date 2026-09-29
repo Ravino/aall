@@ -1,0 +1,71 @@
+# scratch/downloaded/generated data (firmware, toolchains, PipeWire
+# sources, benchmark logs) -- see module/prepare-tree.sh and
+# qemu/build-qemu-hexagon.sh for how to regenerate what's needed
+work/
+
+# build artifacts (meson/ninja/gcc), wherever they appear in the tree --
+# always regenerable, see module/prepare-tree.sh and each
+# component's own build instructions
+build*/
+
+# ... except tools/build/, which despite the name is a small *source*
+# directory (tracked helper scripts consumed by the top-level Makefile,
+# e.g. meson-option.py) and not a meson/ninja build output -- the glob
+# above matches any path component named "build*" at any depth, which
+# accidentally swallowed it too (a clean `git
+# clone`/`git archive` silently lost meson-option.py, breaking `make
+# install`'s plugin/BUILD-INFO destination path). Un-ignore it explicitly
+# rather than trying to make the glob above precise for every component's
+# own build-directory naming (build/, build-asan/, build-release/,
+# build-042/, ... -- see each component's own docs), which stays broad on
+# purpose.
+!tools/build/
+!tools/build/**
+*.o
+*.so
+*.so.*
+
+# generated, patched upstream PipeWire source tree (hundreds of files, not
+# ours) -- regenerate with module/prepare-tree.sh; doesn't
+# match "build*" above because meson needs it as a sibling of the build
+# directory, not inside it
+module/pipewire-src/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# local, machine-specific build environment (absolute paths) -- copy
+# env.sh.example to env.sh and adjust if you keep dependencies elsewhere
+module/env.sh
+daemon/env.sh
+
+# runtime logs and other local state, not experiment results
+**/log/*
+!**/log/.gitkeep
+
+# large/proprietary archives -- never commit firmware/vendor blobs here,
+# keep them in work/ (already ignored above)
+*.img
+*.zip
+*.tgz
+*.tar
+*.tar.*
+*.bin
+
+# Debian packaging build artifacts (dpkg-buildpackage), wherever a future
+# packaging/debian/ ends up producing them
+*.deb
+*.ddeb
+*.buildinfo
+*.changes
+debian/.debhelper/
+debian/*.debhelper.log
+debian/*.substvars
+debian/debhelper-build-stamp
+debian/files
+
+# a one-off Hexagon build directory that predates loader/meson.build and
+# does not match the "build*/" glob above (its name ends, not starts, with
+# "-build")
+module/hexagon-build/

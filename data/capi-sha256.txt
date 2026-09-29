@@ -1,0 +1,41 @@
+# capi-sha256.txt -- known sha256 hashes of the CAPI v2 aptX Adaptive
+# module (Hexagon ADSP ELF)
+#
+# Format: sha256  filename  device  android  build  status
+# status: LOADER-TESTED  = confirmed to run through our hx_adaptive_loader (loader/)
+#         NOT-TESTED     = file exists but was not verified through our loader
+#         LIVE           = currently in real use by the user's live install (helper-capi in the config)
+#
+# Sources and full provenance metadata (device/firmware/date/path inside the
+# image) are kept outside this repository. This file is only a summary for
+# the sha256 check in `momentum4 setup --capi`.
+#
+# IMPORTANT: the .so files themselves are never committed to this repository.
+# This list is only a set of hashes to verify the user's own file, not a
+# source for obtaining it.
+
+# --- capi_v2_aptX_CLHDADV_Encoder.so (current name, "V" = Adaptive) ---
+
+b2c976b77a9de2fac7942b2afc77b5723615b7d3b11e4bd89eea3939eddd8e6a  capi_v2_aptX_CLHDADV_Encoder.so  ASUS ROG Phone 3 (I003_1)  Android 12  vendor/lib/rfsa/adsp (SD865)  LOADER-TESTED, LIVE
+
+# --- capi_v2_aptX_CLHDAD_Speech_Decoder.so (decoder for the CLHDADV encoder, same SD865 build) ---
+# Not used by our hx_adaptive_loader / helper (only the encoder path is
+# needed), but ships alongside CLHDADV_Encoder.so in the same image --
+# kept here for reference/ABI comparison.
+
+226172d7bc56e008ffcb253c3fbf149838b491be93f72cc62f9a4e4e1d8ce2e1  capi_v2_aptX_CLHDAD_Speech_Decoder.so  ASUS ROG Phone 3 (I003_1)  Android 12  vendor/lib/rfsa/adsp (SD865)  NOT-TESTED (decoder, not used by the loader)
+
+# --- capi_v2_aptX_CLHDAD_Encoder.so (older name, no "V", earliest Adaptive-capable device) ---
+# An earlier revision of the same CAPI family (ASUS ROG Phone 2, Android 9,
+# 2019, SD855 -- the first commercial device with aptX Adaptive). The module
+# name differs (no "V"), and the ABI/protocol version is likely different
+# (a lower R-version) -- NOT verified for compatibility with our
+# loader/hexagon/runtime.c, which was written against the specific ABI of the R2.1
+# SD865 build (see loader/hexagon/capi_v2.h).
+# Using this instead of the LIVE hash above without separate verification
+# is not recommended.
+
+797388a4c0c60830546a938522d4a5432975eb73108aa2b306c1f6f14542a9cf  capi_v2_aptX_CLHDAD_Encoder.so  ASUS ROG Phone 2 (I001D)  Android 9  vendor/lib/rfsa/adsp (SD855)  NOT-TESTED, different module name / likely different ABI
+
+# --- Currently in live use (helper-capi in ~/.config/momentum4/aptx-adaptive.conf) ---
+# b2c976b77a9de2fac7942b2afc77b5723615b7d3b11e4bd89eea3939eddd8e6a

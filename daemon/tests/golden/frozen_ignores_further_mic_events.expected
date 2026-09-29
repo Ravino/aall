@@ -1,0 +1,15 @@
+START actions=NONE frozen=0 call_active=0 call_reason=none mic_active=0 hold_active=0
+MIC actions=NONE frozen=0 call_active=0 call_reason=none mic_active=1 hold_active=0
+TICK actions=CALL_ON frozen=0 call_active=1 call_reason=auto mic_active=1 hold_active=0
+MIC actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=CALL_OFF frozen=0 call_active=0 call_reason=none mic_active=0 hold_active=0
+MIC actions=NONE frozen=0 call_active=0 call_reason=none mic_active=1 hold_active=0
+TICK actions=CALL_ON frozen=0 call_active=1 call_reason=auto mic_active=1 hold_active=0
+MIC actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=ANNOUNCE_FREEZE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+MIC actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+MIC actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+MIC actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=NONE frozen=1 call_active=1 call_reason=auto mic_active=0 hold_active=0

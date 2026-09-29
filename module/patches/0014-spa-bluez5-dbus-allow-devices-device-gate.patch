@@ -1,0 +1,101 @@
+diff --git a/spa/plugins/bluez5/bluez5-dbus.c b/spa/plugins/bluez5/bluez5-dbus.c
+--- a/spa/plugins/bluez5/bluez5-dbus.c
++++ b/spa/plugins/bluez5/bluez5-dbus.c
+@@ -40,6 +40,8 @@
+ #include "iso-io.h"
+ #include "bap-codec-caps.h"
+ #include "defs.h"
++#include "m4-conf.h" /* momentum4: allow-devices device gate, see m4_adaptive_device_allowed() below */
++#include "m4-device-policy.h"
+ 
+ SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.bluez5");
+ #undef SPA_LOG_TOPIC_DEFAULT
+@@ -4642,6 +4644,64 @@
+ 	return spa_bt_backend_supports_codec(monitor->backend, device, codec);
+ }
+ 
++/* momentum4: [adaptive] allow-devices device
++ * gate for the aptx_adaptive codec's own SetConfiguration() entry point --
++ * closes a real gap (the codec's own .validate_config() alone
++ * only ever compares the incoming AVDTP Configuration bytes against OUR OWN
++ * fill_caps() output, since any ADK-based initiator's SelectOptimalAptxAd...
++ * path echoes most of those bytes back verbatim -- so a SetConfiguration()
++ * from a DIFFERENT ADK-stereo-headset-fingerprint-compatible receiver, or
++ * one whose MAC we explicitly trust, would otherwise pass unnoticed).
++ * Applies ONLY to aptx_adaptive (checked by the caller); every other codec
++ * in this plugin (sbc, aac, aptx, aptx-hd, ldac, opus, ...) is completely
++ * unaffected -- this is a private addition, not an upstream PipeWire
++ * behaviour, and deliberately does NOT change struct media_codec's ABI
++ * (a MAC-aware media_codec vtable would need to change the
++ * vtable for every codec in the plugin, a much larger blast radius than
++ * this one codec's own private policy needs).
++ *
++ * Loads momentum4.conf itself (cheap, not RT: this runs once per AVDTP
++ * SetConfiguration, the same non-RT budget class as every other config
++ * load in this project) rather than threading a resolved value in from
++ * elsewhere, since this is the only call site in this file that needs it. */
++static bool m4_adaptive_device_allowed(struct spa_bt_device *device, const struct media_codec *codec)
++{
++	m4_conf_t c;
++	const char *raw;
++	char mac_csv[M4_DEVICE_POLICY_MAC_CSV_MAX];
++	bool valid;
++	enum m4_device_policy_mode mode;
++	struct spa_bt_remote_endpoint *ep;
++
++	m4_conf_init(&c);
++	m4_conf_load_layers(&c);
++	raw = m4_conf_get_string(&c, "adaptive", "allow-devices");
++	mode = m4_device_policy_parse_allow_devices(raw, mac_csv, sizeof(mac_csv), &valid);
++
++	if (mode == M4_DEVICE_POLICY_ANY)
++		return true;
++
++	if (mode == M4_DEVICE_POLICY_MAC_LIST)
++		return device != NULL && device->address != NULL &&
++				m4_device_policy_mac_list_contains(mac_csv, device->address);
++
++	/* FINGERPRINT (default "adk-stereo", "m4" alias): at least one remote
++	 * SEP this device actually advertised must pass THIS codec's own
++	 * select_config() (byte-fingerprint check, patch 0009/0012) against
++	 * caps the DEVICE ITSELF sent over AVDTP DiscoverEndpoints --
++	 * media_codec_check_caps() is the exact same helper
++	 * spa_bt_device_supports_media_codec() already uses for this above in
++	 * this file. */
++	if (device == NULL)
++		return false;
++	spa_list_for_each(ep, &device->remote_endpoint_list, device_link) {
++		if (media_codec_check_caps(codec, ep->codec, ep->capabilities, ep->capabilities_len,
++				&ep->monitor->default_audio_info, &ep->monitor->global_settings))
++			return true;
++	}
++	return false;
++}
++
+ static DBusHandlerResult endpoint_set_configuration(DBusConnection *conn,
+ 		const char *path, DBusMessage *m, void *userdata)
+ {
+@@ -4719,6 +4779,23 @@
+ 	spa_assert(codec != NULL);
+ 	spa_log_debug(monitor->log, "%p: %s codec:%s", monitor, path, codec ? codec->name : "<null>");
+ 
++	/* momentum4: private allow-devices device
++	 * gate, aptx_adaptive only -- see m4_adaptive_device_allowed()'s own
++	 * doc comment. Placed right after the codec is finally resolved
++	 * (multi-codec-per-endpoint pick above) and before this transport is
++	 * wired up any further, so a rejected device gets exactly the same
++	 * DBUS_HANDLER_RESULT_NOT_YET_HANDLED "reject this SetConfiguration()"
++	 * outcome as every other validation failure a few lines below in this
++	 * same function -- BlueZ/the peer then falls back to the next codec by
++	 * priority (aptX HD), never a crash or a half-configured transport. */
++	if (spa_streq(codec->name, "aptx_adaptive") &&
++			!m4_adaptive_device_allowed(transport->device, codec)) {
++		spa_log_warn(monitor->log, "%p: %s: aptx_adaptive SetConfiguration() rejected by "
++				"allow-devices policy (device %s)", monitor, path,
++				transport->device->address ? transport->device->address : "?");
++		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
++	}
++
+ 	spa_bt_device_update_last_bluez_action_time(transport->device);
+ 
+ 	if (profile & SPA_BT_PROFILE_A2DP_SOURCE) {

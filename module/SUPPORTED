@@ -1,0 +1,25 @@
+# SUPPORTED -- PipeWire versions this patch set (patches/*.patch) is known
+# to apply to and has actually been built/tested against.
+#
+# One version per line (exact "x.y.z", matching `pipewire --version`'s own
+# "Compiled with libpipewire X.Y.Z" / `pkg-config --modversion
+# libpipewire-0.3` format). Blank lines and lines starting with '#' are
+# ignored. prepare-tree.sh reads this file to
+# decide whether the PipeWire version actually installed on this machine is
+# one this patch set is expected to be ABI-compatible with -- see that
+# script's own "--- 0. supported-version check ---" section for exactly how
+# this is used and what happens on a mismatch.
+#
+# Only 1.4.2 so far (the version prepare-tree.sh itself downloads/patches,
+# PW_VERSION below): every patch in patches/*.patch was written against and
+# tested on exactly this PipeWire release.
+# A different PipeWire version -- even a nearby patch release -- may have
+# shifted line numbers, renamed fields, or changed struct media_codec's ABI
+# enough that these patches
+# either fail to apply or, worse, apply textually but produce a .so that is
+# NOT actually safe to load into a differently-versioned running
+# WirePlumber ("Supported PipeWire versions").
+# Add a new line here (and, separately, actually rebuild+retest against
+# that version) before ever relying on this list to say "yes" for anything
+# else.
+1.4.2

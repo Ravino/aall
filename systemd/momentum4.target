@@ -1,0 +1,18 @@
+# momentum4.target -- umbrella target for the momentum4 project's own
+# units. Currently pulls in only momentum4d.service; a future
+# momentum4-control.service (if ever split out) would follow the same
+# PartOf=momentum4.target pattern.
+#
+# Deliberately does NOT pull in momentum4-helper.socket or
+# momentum4-graph.service: "momentum4 disable" (or plain
+# "systemctl --user stop momentum4.target") must not silence M4 or drop
+# the audio graph setup on its own, only the daemon's own automation.
+# Those two remain independently managed units.
+#
+# No @-substitutions in this file -- installed byte for byte.
+
+[Unit]
+Description=momentum4: core/control units (without helper/graph -- see comment above)
+
+[Install]
+WantedBy=default.target

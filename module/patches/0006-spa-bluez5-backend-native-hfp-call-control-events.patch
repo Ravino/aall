@@ -1,0 +1,64 @@
+diff --git a/spa/plugins/bluez5/backend-native.c b/spa/plugins/bluez5/backend-native.c
+--- a/spa/plugins/bluez5/backend-native.c
++++ b/spa/plugins/bluez5/backend-native.c
+@@ -40,6 +40,7 @@
+ #include "modemmanager.h"
+ #include "upower.h"
+ #include "telephony.h"
++#include "m4-hfp-events.h" /* momentum4 patch 0006 */
+ 
+ SPA_LOG_TOPIC_DEFINE_STATIC(log_topic, "spa.bluez5.native");
+ #undef SPA_LOG_TOPIC_DEFAULT
+@@ -1213,6 +1214,38 @@
+ 		// This command is sent when we activate Apple extensions
+ 		rfcomm_send_reply(rfcomm, "OK");
+ 	} else if (!mm_is_available(backend->modemmanager)) {
++		/* momentum4 patch 0006: MOMENTUM 4's
++		 * own gesture->AT mapping (e.g. swipe back = "end call") lands here
++		 * because this machine never registers a ModemManager. Upstream
++		 * answers every such command with +CME ERROR and does nothing else,
++		 * which gives us no way to react to the gesture. For exactly the
++		 * four call-control commands the M4 is known (or expected) to send
++		 * in this situation, answer OK instead (closer to the HFP spec:
++		 * "no call to hang up/answer" is not an AG error) and fan the event
++		 * out to momentum4d over a best-effort, non-blocking UNIX datagram
++		 * socket -- m4_hfp_events_notify() never blocks this main loop
++		 * thread, and silently drops the event if momentum4d or its socket
++		 * is not there. Every other unhandled AT command keeps the
++		 * original ERROR behaviour below. */
++		const char *m4_verb = NULL;
++
++		if (spa_strstartswith(buf, "AT+CHUP"))
++			m4_verb = "CHUP";
++		else if (spa_strstartswith(buf, "ATA"))
++			m4_verb = "ATA";
++		else if (spa_strstartswith(buf, "AT+BLDN"))
++			m4_verb = "BLDN";
++		else if (spa_strstartswith(buf, "AT+BVRA"))
++			m4_verb = "BVRA";
++
++		if (m4_verb != NULL) {
++			spa_log_info(backend->log, "momentum4: HF call control without modem, answering OK: %s", buf);
++			m4_hfp_events_notify(backend->log, m4_verb,
++					rfcomm->device ? rfcomm->device->address : NULL);
++			rfcomm_send_reply(rfcomm, "OK");
++			return true;
++		}
++
+ 		spa_log_warn(backend->log, "RFCOMM receive command but modem not available: %s", buf);
+ 		rfcomm_send_error(rfcomm, CMEE_NO_CONNECTION_TO_PHONE);
+ 		return true;
+diff --git a/spa/plugins/bluez5/meson.build b/spa/plugins/bluez5/meson.build
+--- a/spa/plugins/bluez5/meson.build
++++ b/spa/plugins/bluez5/meson.build
+@@ -57,6 +57,10 @@
+     bluez5_sources += ['modemmanager.c']
+   endif
+   bluez5_sources += ['backend-native.c', 'upower.c', 'telephony.c']
++  # momentum4 patch 0006 (experimental, out-of-tree only): notifies
++  # momentum4d of HFP call-control AT commands backend-native.c answers OK
++  # instead of +CME ERROR because there is no ModemManager.
++  bluez5_sources += ['m4-hfp-events.c']
+ endif
+ 
+ if get_option('bluez5-backend-ofono').allowed()

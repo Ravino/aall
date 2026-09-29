@@ -1,0 +1,42 @@
+# mic_on_enter_off.scn -- mic-on-enter: `[call] mic-on-enter = off`
+# -- entry-fix always mutes the M4 mic (Route volume 0 -> +VGM:0), regardless
+# of what it reported right before the call; call off still always force-
+# unmutes afterwards (existing, unrelated "tap = mic" behaviour --
+# mic-on-enter only governs HFP ENTRY, not exit).
+CONFIG confirm_timeout_ms=200 use_repair=0 mic_on_enter=off
+0.0 present 1 1
+0.0 mode manual
+0.0 expect_profile a2dp-sink
+
+# M4 reports full gain BEFORE the call -- entry-fix must mute it.
+0.0 mic_route 1 1.0 0
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+0.0 expect_mic_volume 0.0
+0.0 expect_mic_mute 1
+0.0 expect_set_mic_volume_calls 1
+
+# already muted on a second observation -- no extra write (idempotent).
+0.1 mic_route 1 0.0 1
+0.1 expect_set_mic_volume_calls 1
+
+0.2 call off
+0.2 expect_response_ok
+0.2 expect_profile a2dp-sink
+0.2 expect_call_active 0
+# call-off's own unconditional force-unmute (unrelated existing behaviour):
+# the LIVE Route ends up unmuted even though mic-on-enter=off.
+0.2 expect_mic_volume 1.0
+0.2 expect_mic_mute 0
+
+# second call: mutes again from the (now unmuted) live state. Calls so far:
+# 1 (entry-fix @0.0) + 1 (force-unmute @0.2, ALWAYS issued, even though the
+# Route was already unmuted -- daemon_force_mic_unmute()'s own doc comment)
+# + 1 (this entry-fix) = 3.
+0.3 call on
+0.3 expect_response_ok
+0.3 expect_mic_volume 0.0
+0.3 expect_mic_mute 1
+0.3 expect_set_mic_volume_calls 3

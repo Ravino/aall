@@ -1,0 +1,23 @@
+# connect_disconnect.scn -- M4 disappears while an automode CALL_ON attempt
+# is in flight (debounce already armed), then reappears. Fixed: daemon.c's
+# m4_daemon_tick() now detects the M4 present false->true edge itself and
+# replays automode's cached mic_active/hold_active as a fresh edge if either
+# is still true -- so the daemon retries the lost attempt ON ITS OWN, without
+# needing a brand new mic start/stop from the app (which is what this
+# scenario used to rely on before the fix, and is not something the daemon
+# can assume will happen).
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0  present 1 1
+0.0  expect_open_calls 1
+0.0  mode auto
+0.0  mic signal-desktop start
+0.0  expect_mic_active 1
+0.1  present 0 0
+0.35 expect_set_profile_calls 0
+0.35 expect_call_active 0
+0.5  present 1 1
+0.5  expect_call_active 0
+0.5  expect_set_profile_calls 0
+0.85 expect_set_profile_calls 1
+0.85 expect_call_active 1
+0.85 expect_profile headset-head-unit

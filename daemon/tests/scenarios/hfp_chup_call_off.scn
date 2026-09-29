@@ -1,0 +1,32 @@
+# hfp_chup_call_off.scn -- task scenario: CHUP in HFP -> call off.
+#
+# M4 is connected, a call is already active (started manually, e.g. by a
+# gesture/ctl `call on` the same way test_gesture_toggles_ctl_started_call()
+# in tests/test_gestures.c does), then M4 sends AT+CHUP over the RFCOMM
+# channel. Patch 0006 (spa/plugins/bluez5/backend-native.c, our private
+# libspa-bluez5) answers OK instead of the usual +CME ERROR and forwards a
+# "CHUP <bdaddr> <ts>" datagram to $runtime_dir/hfp-events.sock; momentum4d's
+# ipc/hfp_events.c receives it and calls m4_daemon_hfp_event(), which (per
+# the default hfp-chup=call-off, settings.h) switches the M4 card back to
+# a2dp-sink -- exactly like a manual `momentum4 call off` would, sharing the
+# same cooldown state as gestures.
+#
+# This scenario drives m4_daemon_hfp_event() directly via the "hfp <VERB>"
+# DSL command (see scenario_runner.c's process_command()) rather than a real
+# UNIX socket -- the socket transport itself (both the SPA-side sender's
+# non-blocking guarantees and this daemon-side receiver's parsing/draining)
+# is covered by dedicated unit tests instead:
+#   module/test/hfp_events_test.c (sender)
+#   tests/test_hfp_events.c (receiver, real AF_UNIX SOCK_DGRAM socket)
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0 present 1 1
+0.0 mode manual
+0.0 expect_profile a2dp-sink
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+0.1 hfp CHUP
+0.1 expect_profile a2dp-sink
+0.1 expect_call_active 0
+0.1 expect_set_profile_calls 2

@@ -1,0 +1,587 @@
+/* common/m4-conf-keys.def -- THE registry of every momentum4.conf key,
+ * with types, ranges and defaults. X-macro:
+ * #define M4_CONF_KEY(section, key, type, default, min, max, enum_values, comment_en, comment_ru)
+ * before #include-ing this file, then #undef it. This is the ONE place in
+ * the whole codebase where a default value is allowed to be a literal --
+ * no .c file should hardcode one of these; every default belongs here
+ * instead, read through common/m4-conf.c.
+ *
+ * min/max are ignored for M4_CONF_T_BOOL/STRING/ENUM (pass 0, 0).
+ * enum_values is ignored for every type except M4_CONF_T_ENUM (pass NULL).
+ * default is ALWAYS the canonical text form (gen-conf.c prints it verbatim
+ * as the shipped value, still containing any ${...}/%h/@...@ placeholder --
+ * see m4-conf.h's own header comment for the substitution rules).
+ *
+ * comment_en/comment_ru are the two language variants of the same text
+ * (see common/m4-i18n.h): callers pick one at runtime through M4_T(),
+ * never at this file's #include time -- m4_conf_key_def_t keeps both
+ * pointers (m4-conf.h), it does not resolve them here. comment_ru is the
+ * authoritative original (do not retranslate it when only comment_en
+ * changes); comment_en is the default shown/shipped when [general]
+ * language = en (the default).
+ *
+ * Ordering matters: keys are grouped by section, in the exact order gen-
+ * conf.c will print sections (first appearance order) -- keep new keys
+ * next to their section's existing ones, do not append a new section's
+ * first key at the end of the file.
+ */
+
+/* --- [general] --------------------------------------------------- */
+M4_CONF_KEY("general", "language", M4_CONF_T_ENUM, "en", 0, 0, "en|ru",
+	"Interface language: CLI output (--help, `status`/`doctor`/`stats`/\n"
+	"`config`/`log`), daemon messages in the journal, and this registry's\n"
+	"own key descriptions. An unrecognized value falls back to \"en\" with\n"
+	"a warning. `momentum4d` picks up a change on `reload`, without a\n"
+	"restart.",
+	"Язык интерфейса: вывод CLI (--help, `status`/`doctor`/`stats`/\n"
+	"`config`/`log`), сообщения демона в journal и описания ключей этого\n"
+	"реестра. Нераспознанное значение -- откат на \"en\" с предупреждением.\n"
+	"`momentum4d` подхватывает смену по `reload`, без рестарта.")
+
+/* --- [device] ------------------------------------------------ */
+M4_CONF_KEY("device", "address", M4_CONF_T_STRING, "auto", 0, 0, NULL,
+	"MAC address of the Momentum 4 (AA:BB:CC:DD:EE:FF), or \"auto\" -- the\n"
+	"first BlueZ-paired device whose Alias/Name matches name-match.\n"
+	"`momentum4 install` writes the MAC it found explicitly.",
+	"MAC-адрес Momentum 4 (AA:BB:CC:DD:EE:FF) или \"auto\" -- первое\n"
+	"сопряжённое устройство BlueZ, чьё Alias/Name совпадает с name-match.\n"
+	"`momentum4 install` записывает найденный MAC явно.")
+M4_CONF_KEY("device", "name-match", M4_CONF_T_STRING, "MOMENTUM 4", 0, 0, NULL,
+	"Case-insensitive BlueZ name/alias prefix used to recognize \"this is\n"
+	"an M4\" when address=auto, and to filter [adaptive] allow-devices=m4 /\n"
+	"[hfp] call-control=m4 / sco-restore=m4.",
+	"Префикс имени/алиаса BlueZ (без учёта регистра), по которому\n"
+	"распознаётся \"это M4\" при address=auto, и которым фильтруются\n"
+	"[adaptive] allow-devices=m4 / [hfp] call-control=m4 / sco-restore=m4.")
+M4_CONF_KEY("device", "adapter", M4_CONF_T_STRING, "auto", 0, 0, NULL,
+	"BlueZ adapter (\"hci0\"), or \"auto\" (taken from the found device's\n"
+	"Device1.Adapter).",
+	"BlueZ-адаптер (\"hci0\") или \"auto\" (берётся из Device1.Adapter\n"
+	"найденного устройства).")
+
+/* --- [adaptive] (plugin + patch 0005 + m4-src) ----------------- */
+M4_CONF_KEY("adaptive", "mode", M4_CONF_T_ENUM, "ll0", 0, 0, "ll0|ll1",
+	"ll0 (SSRC 0xA1, base TTP 55 ms) or ll1 (SSRC 0xA2, 106 ms).",
+	"ll0 (SSRC 0xA1, база TTP 55 мс) или ll1 (SSRC 0xA2, 106 мс).")
+M4_CONF_KEY("adaptive", "latency-adjust-ms", M4_CONF_T_INT, "-15", -1000, 1000, NULL,
+	"Signed correction on top of the mode's base TTP target, ms.\n"
+	"Tuned by ear.",
+	"Поправка поверх базового TTP-таргета режима, мс, со знаком.\n"
+	"Подбирается на слух.")
+M4_CONF_KEY("adaptive", "heartbeat", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Preventive TTP resync. Only turn off for debugging.",
+	"Профилактический TTP-resync. Выключать только для отладки.")
+M4_CONF_KEY("adaptive", "resync-period-min", M4_CONF_T_INT, "10", 0, 1440, NULL,
+	"Preventive resync if nothing else has triggered one, minutes.",
+	"Профилактический resync, если ничего другого не сработало, минуты.")
+M4_CONF_KEY("adaptive", "io-rt-priority", M4_CONF_T_INT, "70", 0, 99, NULL,
+	"RT (SCHED_FIFO) priority of the bridge's IO thread (NOT the helper --\n"
+	"see [helper] rt-priority). 0 = SCHED_OTHER. EPERM is silently\n"
+	"ignored (see bridge_rt_policy/bridge_rt_prio in stats).",
+	"RT (SCHED_FIFO) приоритет IO-нити моста (НЕ helper'а -- см. [helper]\n"
+	"rt-priority). 0 = SCHED_OTHER. EPERM тихо игнорируется (см.\n"
+	"bridge_rt_policy/bridge_rt_prio в stats).")
+M4_CONF_KEY("adaptive", "helper-mode", M4_CONF_T_ENUM, "socket", 0, 0, "socket|spawn",
+	"socket (default) -- qemu-hexagon as a separate systemd --user\n"
+	"socket-activated unit. spawn -- fork+exec by WirePlumber itself (only\n"
+	"for offline tests/without systemd units).",
+	"socket (по умолчанию) -- qemu-hexagon отдельным systemd --user\n"
+	"socket-activated юнитом. spawn -- fork+exec самим WirePlumber (только\n"
+	"офлайн-тесты/без systemd-юнитов).")
+M4_CONF_KEY("adaptive", "reconnect-grace-ms", M4_CONF_T_INT, "1500", 0, 60000, NULL,
+	"Window to reconnect the helper without resetting the bridge's state.",
+	"Окно на переподключение helper'а без сброса состояния моста.")
+M4_CONF_KEY("adaptive", "stall-ms", M4_CONF_T_DOUBLE, "50.0", 0, 10000, NULL,
+	"Input stream \"stall\" threshold for soft underrun (PLC-lite).",
+	"Порог \"застревания\" входного потока для мягкого недобора (PLC-lite).")
+M4_CONF_KEY("adaptive", "warmup-blocks", M4_CONF_T_INT, "20", 0, 1000, NULL,
+	"Number of warm-up blocks before metrics are considered \"settled\".",
+	"Число блоков разогрева перед тем, как метрики считаются \"устойчивыми\".")
+M4_CONF_KEY("adaptive", "btq-threshold-ms", M4_CONF_T_DOUBLE, "30.0", 0, 10000, NULL,
+	"BT controller queue threshold that triggers a \"btq\" resync.",
+	"Порог очереди BT-контроллера, включающий триггер resync \"btq\".")
+M4_CONF_KEY("adaptive", "fade-in", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Smooth fade-in instead of an instant stream start (avoids a click).",
+	"Плавный fade-in вместо мгновенного старта потока (щелчок).")
+M4_CONF_KEY("adaptive", "fade-in-frames", M4_CONF_T_INT, "240", 0, 48000, NULL,
+	"Fade-in length in samples, when fade-in = on.",
+	"Длина fade-in в сэмплах, если fade-in = on.")
+M4_CONF_KEY("adaptive", "ring-slots", M4_CONF_T_INT, "8", 1, 32, NULL,
+	"Working capacity of the bridge's output ring, frames (the hard cap is\n"
+	"fixed at build time to 32 -- see m4-adaptive-bridge.h).",
+	"Рабочая ёмкость выходного кольца моста, кадров (максимум фиксирован\n"
+	"компиляцией в 32 -- см. m4-adaptive-bridge.h).")
+M4_CONF_KEY("adaptive", "ring-target-frames", M4_CONF_T_INT, "1", 1, 32, NULL,
+	"Target fill level of the ring in steady state, frames.",
+	"Целевой уровень заполнения кольца в устойчивом режиме, кадров.")
+M4_CONF_KEY("adaptive", "ring-trim-sustain-ms", M4_CONF_T_DOUBLE, "200.0", 0, 60000, NULL,
+	"The ring must HOLD above the target for at least this long before a\n"
+	"soft trim starts (guards against latency drift).",
+	"Кольцо должно ДЕРЖАТЬ превышение цели хотя бы столько, прежде чем\n"
+	"начнётся мягкий трим (защита от дрейфа задержки).")
+M4_CONF_KEY("adaptive", "ring-trim-hard-cap-ms", M4_CONF_T_DOUBLE, "1000.0", 0, 60000, NULL,
+	"Hard ceiling: an excess longer than this trims immediately, without\n"
+	"waiting for sustain.",
+	"Жёсткий потолок: превышение дольше этого -- трим сразу, без sustain.")
+M4_CONF_KEY("adaptive", "ring-quiet-amp", M4_CONF_T_INT, "103", 0, 32767, NULL,
+	"\"Silence\" amplitude threshold for trim/resync without an audible click.",
+	"Порог амплитуды \"тишина\" для трима/resync без слышимого щелчка.")
+M4_CONF_KEY("adaptive", "helper-frame-timeout-ms", M4_CONF_T_INT, "200", 0, 60000, NULL,
+	"Timeout waiting for one frame from the helper.",
+	"Таймаут ожидания одного кадра от helper'а.")
+M4_CONF_KEY("adaptive", "helper-startup-timeout-ms", M4_CONF_T_INT, "5000", 0, 60000, NULL,
+	"Timeout for the helper's first start/handshake (qemu-hexagon cold start).",
+	"Таймаут первого запуска/хэндшейка helper'а (qemu-hexagon холодный старт).")
+M4_CONF_KEY("adaptive", "helper-connect-timeout-ms", M4_CONF_T_INT, "1000", 0, 60000, NULL,
+	"Timeout connecting to the helper socket (helper-mode = socket).",
+	"Таймаут подключения к helper-сокету (helper-mode = socket).")
+M4_CONF_KEY("adaptive", "helper-restart-backoff-min-ms", M4_CONF_T_INT, "500", 0, 600000, NULL,
+	"Lower bound of the exponential backoff on helper auto-restart.",
+	"Нижняя граница экспоненциального backoff при автоперезапуске helper'а.")
+M4_CONF_KEY("adaptive", "helper-restart-backoff-max-ms", M4_CONF_T_INT, "10000", 0, 600000, NULL,
+	"Upper bound of the exponential backoff on helper auto-restart.",
+	"Верхняя граница экспоненциального backoff при автоперезапуске helper'а.")
+M4_CONF_KEY("adaptive", "helper-autorestart", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Automatically restart the helper when it crashes/hangs.",
+	"Автоматически перезапускать helper при его падении/зависании.")
+M4_CONF_KEY("adaptive", "helper-stop-grace-ms", M4_CONF_T_INT, "300", 0, 60000, NULL,
+	"How long to wait for a clean helper stop before SIGKILL.",
+	"Сколько ждать штатной остановки helper'а перед SIGKILL.")
+M4_CONF_KEY("adaptive", "idle-poll-ms", M4_CONF_T_INT, "200", 0, 60000, NULL,
+	"Bridge state poll period while the stream is idle.",
+	"Период опроса состояния моста, когда поток простаивает.")
+M4_CONF_KEY("adaptive", "allow-devices", M4_CONF_T_STRING, "adk-stereo", 0, 0, NULL,
+	"adk-stereo (default; \"m4\" is accepted as an alias) -- the remote SEP\n"
+	"must match the ADK-stereo-headset caps fingerprint (see\n"
+	"m4-device-policy.h); any -- no check (UNSAFE for someone else's\n"
+	"Adaptive-capable headset); otherwise -- a comma-separated MAC list\n"
+	"(AA:BB:CC:DD:EE:FF[,...]), in which case ONLY the device address is\n"
+	"checked, the fingerprint is not (e.g. to explicitly add a Momentum 5).\n"
+	"A value that is neither \"any\"/\"adk-stereo\"/\"m4\" nor parses as a\n"
+	"MAC list is treated as adk-stereo, with a warning.",
+	"adk-stereo (по умолчанию; \"m4\" принимается как алиас) --\n"
+	"удалённый SEP должен пройти отпечаток ADK-stereo-headset caps (см.\n"
+	"m4-device-policy.h); any -- без проверки (НЕБЕЗОПАСНО для чужих\n"
+	"наушников с Adaptive); иначе -- список MAC через запятую\n"
+	"(AA:BB:CC:DD:EE:FF[,...]), тогда сверяется ТОЛЬКО адрес устройства,\n"
+	"отпечаток не проверяется (например, чтобы явно добавить Momentum 5).\n"
+	"Значение, которое не \"any\"/\"adk-stereo\"/\"m4\" и не разбирается как\n"
+	"список MAC, трактуется как adk-stereo с предупреждением.")
+M4_CONF_KEY("adaptive", "enable", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Master switch for the aptX Adaptive codec (no WirePlumber restart\n"
+	"needed -- re-read on the next codec_init/reconnect).",
+	"Общий выключатель кодека aptX Adaptive (без перезапуска WirePlumber --\n"
+	"перечитывается при следующем codec_init/переподключении).")
+
+/* --- [helper] (momentum4 helper-exec) -------------------------- */
+M4_CONF_KEY("helper", "socket", M4_CONF_T_STRING, "${XDG_RUNTIME_DIR}/momentum4/helper.sock", 0, 0, NULL,
+	"AF_UNIX socket of the helper (helper-mode = socket). Change ONLY\n"
+	"together with the socket unit's ListenStream= -- `momentum4 doctor`\n"
+	"cross-checks the two.",
+	"AF_UNIX сокет helper'а (helper-mode = socket). Менять ТОЛЬКО вместе\n"
+	"с ListenStream= юнита сокета -- `momentum4 doctor` сверяет.")
+M4_CONF_KEY("helper", "qemu", M4_CONF_T_STRING, "@libexecdir@/momentum4/qemu-hexagon", 0, 0, NULL,
+	"Path to qemu-hexagon(-static). @libexecdir@ -- if built via\n"
+	"qemu/build-qemu-hexagon.sh; otherwise point at your system one\n"
+	"(-Dqemu=system).",
+	"Путь к qemu-hexagon(-static). @libexecdir@ -- если собран через\n"
+	"qemu/build-qemu-hexagon.sh; иначе укажите системный (-Dqemu=system).")
+M4_CONF_KEY("helper", "loader", M4_CONF_T_STRING, "@libdir@/momentum4/hexagon/hx_adaptive_loader", 0, 0, NULL,
+	"Path to hx_adaptive_loader (the ARM-ELF loader for the CAPI encoder,\n"
+	"running inside qemu-hexagon).",
+	"Путь к hx_adaptive_loader (ARM-ELF загрузчик CAPI внутри qemu-hexagon).")
+M4_CONF_KEY("helper", "capi", M4_CONF_T_STRING, "${XDG_DATA_HOME}/momentum4/capi/capi_v2_aptX_CLHDADV_Encoder.so", 0, 0, NULL,
+	"Path to the CAPI v2 encoder extracted from the ADSP partition of a\n"
+	"Snapdragon device's firmware (`momentum4 setup --capi` copies it here).",
+	"Путь к энкодеру CAPI v2, извлечённому из ADSP-раздела прошивки\n"
+	"устройства на Snapdragon (`momentum4 setup --capi` копирует сюда).")
+M4_CONF_KEY("helper", "rt-priority", M4_CONF_T_INT, "10", 0, 50, NULL,
+	"SCHED_FIFO priority of the helper PROCESS itself (not to be confused\n"
+	"with [adaptive] io-rt-priority -- that is the bridge's IO thread).\n"
+	"Above the unit's LimitRTPRIO -- clamped, with a warning.",
+	"SCHED_FIFO приоритет ПРОЦЕССА helper'а (не путать с [adaptive]\n"
+	"io-rt-priority -- это IO-нить моста). Выше LimitRTPRIO юнита --\n"
+	"обрезается с предупреждением.")
+M4_CONF_KEY("helper", "nice", M4_CONF_T_INT, "-5", -20, 19, NULL,
+	"setpriority() for the helper process.",
+	"setpriority() для процесса helper'а.")
+M4_CONF_KEY("helper", "cpu-list", M4_CONF_T_STRING, "", 0, 0, NULL,
+	"CPU list (\"0,1\") for the helper's sched_setaffinity(); empty -- leave alone.",
+	"Список CPU (\"0,1\") для sched_setaffinity() helper'а; пусто -- не трогать.")
+M4_CONF_KEY("helper", "start-mute-pkts", M4_CONF_T_INT, "0", 0, 10000, NULL,
+	"Number of leading frames muted on the helper's cold start.",
+	"Число первых кадров, заглушаемых при холодном старте helper'а.")
+M4_CONF_KEY("helper", "loader-env", M4_CONF_T_STRING, "", 0, 0, NULL,
+	"Extra loader environment variables \"KEY=VAL,KEY=VAL\" -- debugging/RE\n"
+	"only, not documented in the user README.",
+	"Доп. переменные окружения загрузчика \"KEY=VAL,KEY=VAL\" -- только\n"
+	"для отладки/RE, не документируется в пользовательском README.")
+M4_CONF_KEY("helper", "debug-log", M4_CONF_T_BOOL, "off", 0, 0, NULL,
+	"Verbose helper-exec log (not the encoder itself) in the journal.",
+	"Подробный лог helper-exec (не самого энкодера) в journal.")
+
+/* --- [hfp] (patches 0006-0008) ----------------------------------- */
+M4_CONF_KEY("hfp", "call-control", M4_CONF_T_ENUM, "m4", 0, 0, "m4|all|off",
+	"Which device patch 0006 answers OK to AT+CHUP/ATA/BLDN/BVRA for,\n"
+	"without ModemManager. m4 (default) -- only the device matching\n"
+	"[device] name-match/address.",
+	"Кому патч 0006 отвечает OK на AT+CHUP/ATA/BLDN/BVRA без ModemManager.\n"
+	"m4 (по умолчанию) -- только устройству, совпадающему с [device]\n"
+	"name-match/address.")
+M4_CONF_KEY("hfp", "raw-at-capture", M4_CONF_T_BOOL, "off", 0, 0, NULL,
+	"Publish raw AT commands on hfp-events.sock (diagnostics, patch 0007).",
+	"Публиковать сырые AT-команды в hfp-events.sock (диагностика, патч 0007).")
+M4_CONF_KEY("hfp", "raw-min-interval-ms", M4_CONF_T_INT, "200", 0, 60000, NULL,
+	"Minimum interval between publishing the same raw AT command again.",
+	"Минимальный интервал между публикациями одной и той же сырой AT-команды.")
+M4_CONF_KEY("hfp", "sco-restore", M4_CONF_T_ENUM, "m4", 0, 0, "m4|all|off",
+	"Which device patch 0008 restores eSCO for after a drop (M4 double\n"
+	"tap). m4 -- only the device matching name-match/address.",
+	"Кому патч 0008 восстанавливает eSCO после разрыва (двойной тап M4).\n"
+	"m4 -- только устройству, совпадающему с name-match/address.")
+M4_CONF_KEY("hfp", "sco-restore-first-delay-ms", M4_CONF_T_INT, "250", 0, 60000, NULL,
+	"Delay before the first SCO restore attempt.",
+	"Задержка перед первой попыткой восстановления SCO.")
+M4_CONF_KEY("hfp", "sco-restore-retry-delay-ms", M4_CONF_T_INT, "1000", 0, 60000, NULL,
+	"Delay between SCO restore retry attempts.",
+	"Задержка между повторными попытками восстановления SCO.")
+M4_CONF_KEY("hfp", "sco-restore-connect-timeout-ms", M4_CONF_T_INT, "2000", 0, 60000, NULL,
+	"Timeout for one SCO restore attempt.",
+	"Таймаут одной попытки восстановления SCO.")
+M4_CONF_KEY("hfp", "sco-restore-max-retries", M4_CONF_T_INT, "1", 0, 100, NULL,
+	"Number of retries (after the first attempt) before SCOFAIL.",
+	"Число повторных попыток (после первой) перед SCOFAIL.")
+M4_CONF_KEY("hfp", "sco-restore-window-ms", M4_CONF_T_INT, "30000", 0, 3600000, NULL,
+	"Sliding window over which SCO-drop \"episodes\" are counted.",
+	"Скользящее окно, в котором считаются \"эпизоды\" разрыва SCO.")
+M4_CONF_KEY("hfp", "sco-restore-max-episodes", M4_CONF_T_INT, "4", 0, 1000, NULL,
+	"How many drop episodes within the window are allowed before giving\n"
+	"up on restoring.",
+	"Сколько эпизодов разрыва в окне допускается до отказа от восстановления.")
+M4_CONF_KEY("hfp", "events-socket", M4_CONF_T_STRING, "${XDG_RUNTIME_DIR}/momentum4/hfp-events.sock", 0, 0, NULL,
+	"AF_UNIX SOCK_DGRAM socket patches 0006-0008 use to tell the daemon\n"
+	"about HFP events (shared key for the plugin and the daemon -- must match).",
+	"AF_UNIX SOCK_DGRAM сокет, которым патчи 0006-0008 сообщают демону\n"
+	"о HFP-событиях (общий ключ для плагина и демона -- должен совпадать).")
+
+/* --- [stats] (written by the plugin, read by the daemon and CLI) ---------------- */
+M4_CONF_KEY("stats", "enable", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Whether to write stats.json/history at all.",
+	"Писать ли stats.json/history вообще.")
+M4_CONF_KEY("stats", "path", M4_CONF_T_STRING, "${XDG_RUNTIME_DIR}/momentum4/adaptive-stats.json", 0, 0, NULL,
+	"Path to the live JSON snapshot of bridge metrics.",
+	"Путь live JSON-снимка метрик моста.")
+M4_CONF_KEY("stats", "history-path", M4_CONF_T_STRING, "${XDG_RUNTIME_DIR}/momentum4/adaptive-stats-history.jsonl", 0, 0, NULL,
+	"Path to the line-based (JSONL) metrics history log.",
+	"Путь построчного (JSONL) журнала истории метрик.")
+M4_CONF_KEY("stats", "interval-ms", M4_CONF_T_INT, "10000", 100, 3600000, NULL,
+	"Period for rewriting stats.json / appending to history.",
+	"Период перезаписи stats.json/дозаписи history.")
+M4_CONF_KEY("stats", "history-lines", M4_CONF_T_INT, "360", 1, 100000, NULL,
+	"How many of the most recent lines to keep in history (rotation).",
+	"Сколько последних строк хранить в history (ротация).")
+M4_CONF_KEY("stats", "history-rotate-every", M4_CONF_T_INT, "30", 1, 100000, NULL,
+	"Every how many records to re-read/truncate the history file (amortizes cost).",
+	"Раз в сколько записей перечитывать/усекать файл history (амортизация).")
+
+/* --- [daemon] -------------------------------------------------- */
+M4_CONF_KEY("daemon", "mode", M4_CONF_T_ENUM, "manual", 0, 0, "observe|manual|auto",
+	"Mode at daemon startup. `momentum4 mode X` changes it only until the\n"
+	"next restart; to change the default, use this key.",
+	"Режим при старте демона. `momentum4 mode X` меняет\n"
+	"только до следующего рестарта; чтобы изменить дефолт -- этот ключ.")
+M4_CONF_KEY("daemon", "tick-ms", M4_CONF_T_INT, "250", 10, 60000, NULL,
+	"Period of the daemon's internal tick (automode debounces, graph retries).",
+	"Период внутреннего тика демона (automode-дебаунсы, ретраи графа).")
+M4_CONF_KEY("daemon", "graph-retry-s", M4_CONF_T_DOUBLE, "5.0", 0.1, 3600, NULL,
+	"Retry interval for reconnecting to the PipeWire graph after a drop.",
+	"Интервал повторных попыток подключения к графу PipeWire при обрыве.")
+M4_CONF_KEY("daemon", "profile-confirm-timeout-ms", M4_CONF_T_INT, "10000", 100, 120000, NULL,
+	"How long to wait for a Profile change to be confirmed (BlueZ/WirePlumber async).",
+	"Сколько ждать подтверждения смены Profile (BlueZ/WirePlumber async).")
+M4_CONF_KEY("daemon", "repair-a2dp", M4_CONF_T_ENUM, "auto", 0, 0, "auto|manual",
+	"auto -- the daemon tries repair-a2dp once by itself when a2dp-sink is\n"
+	"missing from EnumProfile (see callfsm_off); manual -- only on command.",
+	"auto -- демон сам один раз пробует repair-a2dp при отсутствии\n"
+	"a2dp-sink в EnumProfile (см. callfsm_off); manual -- только по команде.")
+M4_CONF_KEY("daemon", "repair-enum-wait-ms", M4_CONF_T_INT, "10000", 100, 120000, NULL,
+	"How long to wait for a2dp-sink to appear in EnumProfile after ConnectProfile.",
+	"Сколько ждать появления a2dp-sink в EnumProfile после ConnectProfile.")
+M4_CONF_KEY("daemon", "repair-connect-timeout-ms", M4_CONF_T_INT, "15000", 100, 120000, NULL,
+	"Timeout of Device1.ConnectProfile itself during repair-a2dp.",
+	"Таймаут самого Device1.ConnectProfile во время repair-a2dp.")
+M4_CONF_KEY("daemon", "repair-confirm-timeout-ms", M4_CONF_T_INT, "5000", 100, 120000, NULL,
+	"Timeout waiting for the profile to be confirmed after repair-a2dp.",
+	"Таймаут ожидания подтверждения профиля после repair-a2dp.")
+M4_CONF_KEY("daemon", "mic-restore-volume", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Set the M4 mic Route volume/unmute on entering HFP (the M4's\n"
+	"physical button still mutes independently of this).",
+	"При входе в HFP выставлять громкость/unmute Route микрофона M4\n"
+	"(физическая кнопка M4 мьютит независимо от этого).")
+M4_CONF_KEY("daemon", "mic-mute-threshold", M4_CONF_T_DOUBLE, "0.02", 0, 1, NULL,
+	"Route volume threshold below which the mic is considered muted.",
+	"Порог громкости Route, ниже которого микрофон считается замьюченным.")
+
+/* --- [call] ---------------------------------------------------- */
+M4_CONF_KEY("call", "profile-msbc", M4_CONF_T_STRING, "headset-head-unit", 0, 0, NULL,
+	"PipeWire/BlueZ profile name for a call (mSBC).",
+	"Имя профиля PipeWire/BlueZ для звонка (mSBC).")
+M4_CONF_KEY("call", "profile-cvsd", M4_CONF_T_STRING, "headset-head-unit-cvsd", 0, 0, NULL,
+	"Profile name for a call (CVSD fallback, if mSBC is unavailable).",
+	"Имя профиля для звонка (фоллбэк CVSD, если mSBC недоступен).")
+M4_CONF_KEY("call", "profile-music", M4_CONF_T_STRING, "a2dp-sink", 0, 0, NULL,
+	"Profile name to return to after a call (aptX Adaptive/HD).",
+	"Имя профиля, на который возвращаемся после звонка (aptX Adaptive/HD).")
+M4_CONF_KEY("call", "cvsd-fallback", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Try CVSD if mSBC failed to negotiate.",
+	"Пробовать CVSD, если mSBC не согласовался.")
+M4_CONF_KEY("call", "mic-on-enter", M4_CONF_T_ENUM, "on", 0, 0, "on|off|remember",
+	"M4 mic state on entering HFP. on (default) -- always on. off --\n"
+	"always off (Route volume 0 -> +VGM:0). remember -- restores the mic\n"
+	"state from the LAST time HFP was exited (stored in\n"
+	"$XDG_RUNTIME_DIR/momentum4/mic-last-state and [paths] state-dir --\n"
+	"survives a daemon restart; if there is no such record yet, the mic\n"
+	"is on, the same safe default as the key itself).",
+	"Состояние микрофона M4 при входе в HFP. on (по умолчанию) -- всегда\n"
+	"включён. off -- всегда выключен\n"
+	"(Route volume 0 -> +VGM:0). remember -- восстанавливается состояние\n"
+	"микрофона на момент ПОСЛЕДНЕГО выхода из HFP (хранится в\n"
+	"$XDG_RUNTIME_DIR/momentum4/mic-last-state и [paths] state-dir --\n"
+	"переживает перезапуск демона; если такой записи ещё нет вообще --\n"
+	"мик включён, тот же безопасный дефолт, что у самого ключа).")
+
+/* --- [automode] -------------------------------------------------- */
+M4_CONF_KEY("automode", "on-debounce-ms", M4_CONF_T_INT, "300", 0, 3600000, NULL,
+	"Debounce for entering call mode after mic activity appears.",
+	"Дебаунс входа в режим звонка после появления активности микрофона.")
+M4_CONF_KEY("automode", "off-debounce-ms", M4_CONF_T_INT, "2500", 0, 3600000, NULL,
+	"Debounce for leaving call mode after mic activity disappears.",
+	"Дебаунс выхода из режима звонка после пропажи активности микрофона.")
+M4_CONF_KEY("automode", "max-switches", M4_CONF_T_INT, "6", 1, 1000, NULL,
+	"How many auto-switches are allowed within rate-window-s before freezing.",
+	"Сколько автопереключений допускается в rate-window-s до заморозки.")
+M4_CONF_KEY("automode", "rate-window-s", M4_CONF_T_INT, "300", 1, 86400, NULL,
+	"Window (seconds) over which max-switches auto-switches are counted.",
+	"Окно (секунды), в котором считаются автопереключения max-switches.")
+M4_CONF_KEY("automode", "exclude-apps", M4_CONF_T_STRING, "pavucontrol,pw-mon,pw-cat", 0, 0, NULL,
+	"Comma-separated process names whose recording streams do not count\n"
+	"as mic activity (diagnostic tools).",
+	"Имена процессов через запятую, чьи потоки записи не считаются\n"
+	"активностью микрофона (диагностические инструменты).")
+M4_CONF_KEY("automode", "holder-apps", M4_CONF_T_STRING, "signal-desktop", 0, 0, NULL,
+	"Comma-separated process names that hold the mic capture open\n"
+	"permanently -- their mere presence does not extend a call, only a\n"
+	"HOLD from a NON-holder app does.",
+	"Имена процессов через запятую, которые держат захват микрофона\n"
+	"постоянно -- их присутствие само по себе не продлевает звонок, только\n"
+	"HOLD от НЕ-holder приложений это делает.")
+
+/* --- [control] (gestures/AVRCP/HFP-AT -> actions) --------------- */
+M4_CONF_KEY("control", "player", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Register our MPRIS player with BlueZ (otherwise M4 gestures go to uinput).",
+	"Регистрировать наш MPRIS-плеер в BlueZ (иначе жесты M4 идут в uinput).")
+M4_CONF_KEY("control", "player-status", M4_CONF_T_ENUM, "stopped", 0, 0, "stopped|playing|paused|follow",
+	"What PlaybackStatus the M4 sees for our player (see gesture.h).",
+	"Что M4 видит как PlaybackStatus нашего плеера (см. gesture.h).")
+M4_CONF_KEY("control", "player-resync", M4_CONF_T_ENUM, "on", 0, 0, "on|connect|off",
+	"Re-push the player status to the M4 (Stopped -> current), because the\n"
+	"M4 only sends Next/Previous swipes while it believes the source is\n"
+	"playing, and an unchanged BlueZ status is not re-sent to it. connect --\n"
+	"on player registration (daemon start, bluetoothd restart), M4\n"
+	"connecting (Device1/MediaControl1 Connected, a new MediaPlayer1) and\n"
+	"A2DP starting (MediaTransport1 active); on (default) -- the same,\n"
+	"plus after every Play/Pause/Stop from the M4 while player-status is\n"
+	"fixed to playing|paused; off -- never.",
+	"Повторно отдавать M4 статус плеера (Stopped -> текущий), т.к. M4 шлёт\n"
+	"свайпы Next/Previous только пока считает, что источник играет, а\n"
+	"неизменившийся статус BlueZ ему не пересылает. connect -- при регистрации плеера\n"
+	"(старт демона, рестарт bluetoothd), подключении M4 (Device1/MediaControl1\n"
+	"Connected, новый MediaPlayer1) и старте A2DP (MediaTransport1 active);\n"
+	"on (по умолчанию) -- то же плюс после каждого Play/Pause/Stop от M4 при\n"
+	"фиксированном player-status = playing|paused; off -- никогда.")
+M4_CONF_KEY("control", "gesture-play", M4_CONF_T_ENUM, "", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on Play. Empty -- same as gesture-playpause.",
+	"Действие на Play. Пусто -- как gesture-playpause.")
+M4_CONF_KEY("control", "gesture-pause", M4_CONF_T_ENUM, "", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on Pause. Empty -- same as gesture-playpause.",
+	"Действие на Pause. Пусто -- как gesture-playpause.")
+M4_CONF_KEY("control", "gesture-playpause", M4_CONF_T_ENUM, "passthrough", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on a tap (Play/Pause).",
+	"Действие на тап (Play/Pause).")
+M4_CONF_KEY("control", "gesture-next", M4_CONF_T_ENUM, "call-toggle", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on a forward swipe.",
+	"Действие на свайп вперёд.")
+M4_CONF_KEY("control", "gesture-previous", M4_CONF_T_ENUM, "none", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on a backward swipe.",
+	"Действие на свайп назад.")
+M4_CONF_KEY("control", "gesture-stop", M4_CONF_T_ENUM, "none", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on Stop.",
+	"Действие на Stop.")
+M4_CONF_KEY("control", "gesture-cooldown-ms", M4_CONF_T_INT, "300", 0, 60000, NULL,
+	"Ignore further call actions for this long after a switch.",
+	"Игнорировать дальнейшие call-действия это долго после переключения.")
+M4_CONF_KEY("control", "hfp-chup", M4_CONF_T_ENUM, "call-off", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on AT+CHUP (patch 0006).",
+	"Действие на AT+CHUP (патч 0006).")
+M4_CONF_KEY("control", "hfp-ata", M4_CONF_T_ENUM, "none", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on ATA (answer a call).",
+	"Действие на ATA (ответ на звонок).")
+M4_CONF_KEY("control", "hfp-bldn", M4_CONF_T_ENUM, "none", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on AT+BLDN (redial last number).",
+	"Действие на AT+BLDN (повтор последнего номера).")
+M4_CONF_KEY("control", "hfp-bvra", M4_CONF_T_ENUM, "none", 0, 0,
+	"none|call-toggle|call-on|call-off|passthrough|passthrough-exact|mic-toggle",
+	"Action on AT+BVRA (voice recognition).",
+	"Действие на AT+BVRA (голосовое распознавание).")
+M4_CONF_KEY("control", "hfp-sco-drop", M4_CONF_T_ENUM, "restore", 0, 0,
+	"restore|call-off|mic-toggle|none",
+	"Reaction to the M4 dropping HFP audio (double tap).",
+	"Реакция на разрыв HFP-аудио M4 (двойной тап).")
+
+/* --- [earcon] --------------------------------------------------- */
+M4_CONF_KEY("earcon", "enable", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"call-on/call-off/call-error sound notifications via pw-play.",
+	"Звуковые уведомления call-on/call-off/call-error через pw-play.")
+M4_CONF_KEY("earcon", "dir", M4_CONF_T_STRING, "@datadir@/momentum4/sounds", 0, 0, NULL,
+	"Directory with call-on.wav/call-off.wav/call-error.wav etc. (the v2 set).",
+	"Каталог с call-on.wav/call-off.wav/call-error.wav и т.д. (набор v2).")
+M4_CONF_KEY("earcon", "delay-on-ms", M4_CONF_T_INT, "400", 0, 30000, NULL,
+	"Delay before call-on after a successful switch.",
+	"Задержка call-on после успешного переключения.")
+M4_CONF_KEY("earcon", "delay-off-ms", M4_CONF_T_INT, "500", 0, 30000, NULL,
+	"Delay before call-off after a successful switch.",
+	"Задержка call-off после успешного переключения.")
+M4_CONF_KEY("earcon", "delay-sco-up-ms", M4_CONF_T_INT, "150", 0, 30000, NULL,
+	"Delay before the earcon on SCO restore.",
+	"Задержка earcon при восстановлении SCO.")
+M4_CONF_KEY("earcon", "mic-off-chain-delay-ms", M4_CONF_T_INT, "300", 0, 30000, NULL,
+	"[call] mic-on-enter = off/remember: if the mic ends up off after\n"
+	"entering HFP, mic-off is played AFTER call-on -- this delay is\n"
+	"counted from when call-on actually started playing (not from the\n"
+	"switch itself), and must cover call-on.wav's length so the sounds\n"
+	"don't overlap.",
+	"[call] mic-on-enter = off/remember: если микрофон по итогу входа в HFP\n"
+	"остался выключен, mic-off играется ПОСЛЕ call-on -- эта задержка отсчитывается\n"
+	"от момента, когда call-on реально заиграл (не от самого переключения),\n"
+	"и должна перекрывать длительность call-on.wav, чтобы звуки не накладывались.")
+M4_CONF_KEY("earcon", "timeout-s", M4_CONF_T_INT, "6", 1, 3600, NULL,
+	"Timeout waiting for pw-play to finish one earcon.",
+	"Таймаут ожидания завершения pw-play на один earcon.")
+M4_CONF_KEY("earcon", "player", M4_CONF_T_STRING, "pw-play", 0, 0, NULL,
+	"Executable used to play earcons (looked up in PATH).",
+	"Исполняемый файл для проигрывания earcon'ов (ищется в PATH).")
+
+/* --- [graph] (momentum4 graph-host) ----------------------------- */
+M4_CONF_KEY("graph", "mic-placeholder", M4_CONF_T_BOOL, "off", 0, 0, NULL,
+	"Permanent momentum4_mic virtual microphone (placeholder for mic-name).",
+	"Постоянный виртуальный микрофон momentum4_mic (заглушка при mic-name).")
+M4_CONF_KEY("graph", "mic-name", M4_CONF_T_STRING, "momentum4_mic", 0, 0, NULL,
+	"Virtual microphone node name (read by both graph-host and the daemon).",
+	"Имя узла виртуального микрофона (читают и graph-host, и демон).")
+M4_CONF_KEY("graph", "combine", M4_CONF_T_BOOL, "off", 0, 0, NULL,
+	"Combined sink (M4 + other devices from combine-members).",
+	"Комбинированный sink (M4 + другие устройства из combine-members).")
+M4_CONF_KEY("graph", "combine-name", M4_CONF_T_STRING, "m4_combined", 0, 0, NULL,
+	"Combined sink node name.",
+	"Имя узла комбинированного sink'а.")
+M4_CONF_KEY("graph", "combine-members", M4_CONF_T_STRING, "", 0, 0, NULL,
+	"Comma-separated node.name patterns for the other combine members (the\n"
+	"M4 is added automatically, no need to list it).",
+	"Шаблоны node.name других участников combine через запятую (M4\n"
+	"добавляется автоматически, указывать не нужно).")
+M4_CONF_KEY("graph", "combine-latency-compensate", M4_CONF_T_BOOL, "off", 0, 0, NULL,
+	"latency-compensate of the combined sink (module-combine-stream).",
+	"latency-compensate комбинированного sink'а (module-combine-stream).")
+M4_CONF_KEY("graph", "force-quantum", M4_CONF_T_INT, "0", 0, 8192, NULL,
+	"Forced PipeWire graph quantum, 0 = leave alone (this is a global\n"
+	"PipeWire setting, not M4-specific).",
+	"Принудительный quantum графа PipeWire, 0 = не трогать (это глобальная\n"
+	"настройка PipeWire, а не только M4).")
+M4_CONF_KEY("graph", "no-suspend", M4_CONF_T_BOOL, "on", 0, 0, NULL,
+	"Forbid WirePlumber from suspending the M4 on silence --\n"
+	"`momentum4 install` generates the WP drop-in from [device] address.",
+	"Запрещать WirePlumber уводить M4 в Suspend по тишине --\n"
+	"`momentum4 install` генерирует WP drop-in из [device] address.")
+
+/* --- [paths] ---------------------------------------------------- */
+M4_CONF_KEY("paths", "runtime-dir", M4_CONF_T_STRING, "${XDG_RUNTIME_DIR}/momentum4", 0, 0, NULL,
+	"Directory for sockets/latches/state that only survives the current\n"
+	"login. Not recommended to change (units use RuntimeDirectory=momentum4).",
+	"Каталог сокетов/защёлок/состояния, переживающего только текущий вход.\n"
+	"Менять не рекомендуется (юниты используют RuntimeDirectory=momentum4).")
+M4_CONF_KEY("paths", "state-dir", M4_CONF_T_STRING, "${XDG_STATE_HOME}/momentum4", 0, 0, NULL,
+	"State directory that survives a reboot (mode, call-state).",
+	"Каталог состояния, переживающего перезагрузку (режим, call-state).")
+M4_CONF_KEY("paths", "spa-plugin-dir", M4_CONF_T_STRING, "@libdir@/momentum4/spa-plugins", 0, 0, NULL,
+	"Directory with our bluez5 .so files (overrides the system ones via SPA_PLUGIN_DIR).",
+	"Каталог наших .so bluez5 (перекрывает системные через SPA_PLUGIN_DIR).")
+M4_CONF_KEY("paths", "spa-system-dir", M4_CONF_T_STRING, "@spa_system_dir@", 0, 0, NULL,
+	"System directory of the stock spa-0.2 plugins -- resolved at build\n"
+	"time (momentum4d/meson.build) from `pkg-config --variable=plugindir\n"
+	"libspa-0.2`; `doctor` cross-checks it. If pkg-config could not find\n"
+	"libspa-0.2 at build time, this expands to an empty string -- in that\n"
+	"case `momentum4 wp-env` NEVER writes SPA_PLUGIN_DIR (an empty system\n"
+	"directory there = WirePlumber crashes), it only warns; set the value\n"
+	"by hand in this file if your build could not detect it.",
+	"Системный каталог штатных spa-0.2 плагинов -- определяется при сборке\n"
+	"момента (momentum4d/meson.build) из `pkg-config --variable=plugindir\n"
+	"libspa-0.2`; `doctor` сверяет. Если pkg-config не нашёл libspa-0.2 при\n"
+	"сборке, разворачивается в пустую строку -- в этом случае `momentum4\n"
+	"wp-env` НИКОГДА не пишет SPA_PLUGIN_DIR (пустой системный каталог там\n"
+	"= падение WirePlumber), только предупреждает; задайте\n"
+	"значение вручную в этом файле, если ваша сборка не смогла определить его.")
+M4_CONF_KEY("paths", "systemd-user-unit-dir", M4_CONF_T_STRING, "@systemd_user_unit_dir@", 0, 0, NULL,
+	"Where `make install` puts our momentum4-* units and where\n"
+	"`momentum4 install/enable/disable/uninstall` looks for them to\n"
+	"enable (EnableUnitFiles) with systemd --user. The value is computed\n"
+	"at build time from --prefix: under /usr or /usr/local -- the\n"
+	".../lib/systemd/user directory (it is in systemd --user's search\n"
+	"path); under any other prefix (typically ~/.local for a rootless\n"
+	"install) -- .../share/systemd/user, the only option systemd --user\n"
+	"actually scans for such a prefix (`systemctl --user show -p\n"
+	"UnitPath`). Not recommended to change by hand -- `momentum4 doctor`\n"
+	"checks that this value is indeed in systemd --user's search path.",
+	"Куда `make install` кладёт наши юниты momentum4-* и где их ищет\n"
+	"`momentum4 install/enable/disable/uninstall`, чтобы включить\n"
+	"(EnableUnitFiles) их для systemd --user. Значение вычисляется при\n"
+	"сборке из --prefix: под /usr или /usr/local -- каталог .../lib/systemd/user\n"
+	"(он есть в пути поиска systemd --user); под любым другим префиксом\n"
+	"(обычно ~/.local для установки без root) -- .../share/systemd/user,\n"
+	"единственный вариант, который systemd --user реально сканирует для\n"
+	"такого префикса (`systemctl --user show -p UnitPath`). Менять вручную\n"
+	"не рекомендуется -- `momentum4 doctor` проверяет, что это значение\n"
+	"действительно входит в путь поиска systemd --user.")
+
+/* --- [cli] -------------------------------------------------------- */
+M4_CONF_KEY("cli", "call-timeout-ms", M4_CONF_T_INT, "45000", 100, 300000, NULL,
+	"Timeout of `momentum4 call on|off` over ctl.sock.",
+	"Таймаут `momentum4 call on|off` через ctl.sock.")
+M4_CONF_KEY("cli", "mode-timeout-ms", M4_CONF_T_INT, "1000", 100, 300000, NULL,
+	"Timeout of `momentum4 mode` over ctl.sock.",
+	"Таймаут `momentum4 mode` через ctl.sock.")
+M4_CONF_KEY("cli", "player-timeout-ms", M4_CONF_T_INT, "2000", 100, 300000, NULL,
+	"Timeout of `momentum4 player` over ctl.sock.",
+	"Таймаут `momentum4 player` через ctl.sock.")
+M4_CONF_KEY("cli", "repair-a2dp-timeout-ms", M4_CONF_T_INT, "40000", 100, 300000, NULL,
+	"Overall timeout of `momentum4 repair-a2dp` (direct path, no daemon).",
+	"Общий таймаут `momentum4 repair-a2dp` (прямой путь без демона).")
+M4_CONF_KEY("cli", "repair-a2dp-poll-ms", M4_CONF_T_INT, "3000", 10, 60000, NULL,
+	"EnumProfile poll period during `momentum4 repair-a2dp`.",
+	"Период опроса EnumProfile во время `momentum4 repair-a2dp`.")
+M4_CONF_KEY("cli", "status-timeout-ms", M4_CONF_T_INT, "700", 10, 60000, NULL,
+	"Timeout for reading status directly from PipeWire in `momentum4 status`\n"
+	"(no daemon, or after falling back).",
+	"Таймаут прямого чтения статуса из PipeWire в `momentum4 status` (без демона или после фоллбэка).")
+M4_CONF_KEY("cli", "status-poll-ms", M4_CONF_T_INT, "300", 10, 60000, NULL,
+	"Timeout waiting for the daemon's reply over ctl.sock in `momentum4\n"
+	"status`, before falling back to reading PipeWire directly.",
+	"Таймаут ожидания ответа демона по ctl.sock в `momentum4 status`, до фоллбэка на прямое чтение PipeWire.")

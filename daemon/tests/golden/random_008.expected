@@ -1,0 +1,8 @@
+START actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=0 hold_active=0
+TICK actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=0 hold_active=0
+EXTERNAL actions=NONE frozen=0 call_active=1 call_reason=manual mic_active=0 hold_active=0
+EXTERNAL actions=NONE frozen=0 call_active=0 call_reason=none mic_active=0 hold_active=0
+HOLD actions=NONE frozen=0 call_active=0 call_reason=none mic_active=0 hold_active=1
+MIC actions=NONE frozen=0 call_active=0 call_reason=none mic_active=1 hold_active=1
+EXTERNAL actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=1 hold_active=1
+TICK actions=NONE frozen=0 call_active=1 call_reason=auto mic_active=1 hold_active=1

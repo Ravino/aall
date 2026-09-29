@@ -1,0 +1,23 @@
+# Top-level build options. See README.md
+# "Build" for the human-readable version of all of this.
+
+option('tests', type : 'boolean', value : true,
+  description : 'build and register the unit test suites (common/ + daemon)')
+
+option('dev_build', type : 'boolean', value : false,
+  description : 'bake THIS checkout\'s own absolute paths (data/sounds, data/) into the ' +
+                'daemon binary as a last-resort fallback, for running straight out of a git ' +
+                'checkout without installing anything. Must stay false for any real ' +
+                'install/package -- a release build only ever looks at installed/XDG paths.')
+
+option('hexagon_cc', type : 'string', value : '',
+  description : 'path or name of a clang with Hexagon target support, for loader ' +
+                '(the loader/ component). Empty (default): auto-detect clang-19 down to ' +
+                'clang-14, then plain "clang".')
+
+option('pipewire_min_version', type : 'string', value : '1.4.2',
+  description : 'minimum libpipewire-0.3 version the daemon (momentum4d subproject) requires ' +
+                '-- see module/SUPPORTED (module/SUPPORTED) for the separate, ' +
+                'authoritative list of PipeWire versions the SPA plugin itself is patched ' +
+                'against; the two are checked independently because the daemon and the plugin ' +
+                'are two different processes that can be upgraded at different times.')

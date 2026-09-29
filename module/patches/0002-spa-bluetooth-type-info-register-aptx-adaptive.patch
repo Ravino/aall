@@ -1,0 +1,20 @@
+diff --git a/spa/include/spa/param/bluetooth/type-info.h b/spa/include/spa/param/bluetooth/type-info.h
+--- a/spa/include/spa/param/bluetooth/type-info.h
++++ b/spa/include/spa/param/bluetooth/type-info.h
+@@ -41,6 +41,16 @@
+ 	{ SPA_BLUETOOTH_AUDIO_CODEC_OPUS_05_PRO, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "opus_05_pro", NULL },
+ 	{ SPA_BLUETOOTH_AUDIO_CODEC_OPUS_G, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "opus_g", NULL },
+ 
++	/* momentum4: without this
++	 * entry, get_profile_from_index()'s next-index stepping in
++	 * bluez5-device.c (which walks *only* the ids present in this table)
++	 * skips codec id SPA_BLUETOOTH_AUDIO_CODEC_APTX_ADAPTIVE_M4_EXPERIMENTAL
++	 * entirely, so it can never appear in SPA_PARAM_EnumProfile no matter
++	 * what spa_bt_device_get_supported_media_codecs() returns. This is an
++	 * experimental, non-upstream id -- see audio.h for why it is placed
++	 * where it is in the enum. */
++	{ SPA_BLUETOOTH_AUDIO_CODEC_APTX_ADAPTIVE_M4_EXPERIMENTAL, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "aptx_adaptive", NULL },
++
+ 	{ SPA_BLUETOOTH_AUDIO_CODEC_CVSD, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "cvsd", NULL },
+ 	{ SPA_BLUETOOTH_AUDIO_CODEC_MSBC, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "msbc", NULL },
+ 	{ SPA_BLUETOOTH_AUDIO_CODEC_LC3_SWB, SPA_TYPE_Int, SPA_TYPE_INFO_BLUETOOTH_AUDIO_CODEC_BASE "lc3_swb", NULL },

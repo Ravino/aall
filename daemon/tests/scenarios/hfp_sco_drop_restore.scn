@@ -1,0 +1,43 @@
+# hfp_sco_drop_restore.scn -- patch 0008, default
+# hfp-sco-drop = restore.
+#
+# Live bug: in call mode a double tap on the M4 touch
+# panel closed the eSCO link from the headset side (HCI Disconnection
+# Complete, reason 0x13, no AT command), PipeWire left the nodes RUNNING
+# without I/O -> silence. Patch 0008 reconnects the link in place and sends
+# SCODROP, then SCOUP. The daemon must NOT touch the profile for that (the
+# restore happens inside libspa-bluez5; a profile switch would only add a
+# combine-sink re-creation glitch), only confirm with an earcon (not visible
+# to this DSL -- tests/test_sco_drop.c checks it).
+CONFIG confirm_timeout_ms=100 use_repair=0
+0.0 present 1 1
+0.0 mode manual
+0.0 call on
+0.0 expect_response_ok
+0.0 expect_profile headset-head-unit
+0.0 expect_call_active 1
+0.0 expect_set_profile_calls 1
+
+# double tap: link dropped by M4
+5.0 hfp SCODROP
+5.0 expect_profile headset-head-unit
+5.0 expect_call_active 1
+5.0 expect_set_profile_calls 1
+
+# patch 0008 reconnected it ~0.3 s later
+5.3 hfp SCOUP
+5.3 expect_profile headset-head-unit
+5.3 expect_call_active 1
+5.3 expect_set_profile_calls 1
+
+# a second double tap, same story
+9.0 hfp SCODROP
+9.3 hfp SCOUP
+9.3 expect_profile headset-head-unit
+9.3 expect_set_profile_calls 1
+
+# swipe back still ends the call
+12.0 hfp CHUP
+12.0 expect_profile a2dp-sink
+12.0 expect_call_active 0
+12.0 expect_set_profile_calls 2

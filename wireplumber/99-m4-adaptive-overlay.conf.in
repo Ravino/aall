@@ -1,0 +1,35 @@
+# 99-m4-adaptive-overlay.conf.in -- template for
+#   ~/.config/systemd/user/wireplumber.service.d/99-m4-adaptive-overlay.conf
+# Filename is fixed -- `momentum4 disable`/`uninstall` both know this
+# exact path and delete it on rollback. Do not rename without updating
+# that code.
+#
+# The CLI contract this template assumes:
+#
+#   `momentum4 wp-env` writes SPA_PLUGIN_DIR=<our-plugin-dir>:<system-spa-dir>
+#   to %t/momentum4/wp.env ONLY IF the installed aptX Adaptive plugin's own
+#   recorded build info (PipeWire version it was built against) matches
+#   pw_get_library_version() of the libpipewire WirePlumber is about to
+#   load. On any mismatch, on the momentum4 binary being missing/broken, or
+#   on any other error, it must EITHER not write the file at all OR write
+#   it empty -- EnvironmentFile=- below tolerates both (a missing file is
+#   silently skipped; an empty file sets nothing) -- so WirePlumber always
+#   falls back to loading its OWN stock SPA plugins and M4 stays on
+#   ordinary aptX HD. It must never partially write the file (write to a
+#   temp path in the same directory and rename(), same pattern gen-conf.c
+#   already uses) and must not depend on D-Bus or a running PipeWire (only
+#   files + pw_get_library_version(), a pure libpipewire symbol lookup) --
+#   it runs as ExecStartPre, before WirePlumber itself is up.
+#
+# systemd re-reads EnvironmentFile= right before every ExecStart= (see
+# systemd.service(5)), so a value written by the ExecStartPre= just before
+# it always reaches this same invocation's ExecStart=.
+#
+# The literal bindir below is substituted at build time (see ../meson.build); `momentum4
+# install` copies the RESULT of that substitution byte for byte (no
+# per-install parameters here, unlike 51-m4-no-suspend.conf.in).
+
+[Service]
+ExecStartPre=-/bin/rm -f %t/momentum4/wp.env
+ExecStartPre=-@bindir@/momentum4 wp-env
+EnvironmentFile=-%t/momentum4/wp.env
